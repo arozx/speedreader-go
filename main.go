@@ -75,6 +75,7 @@ type model struct {
 	wpm            int
 	paused         bool
 	largeText      bool
+	rampSpeed      bool
 	width          int
 	height         int
 	err            error
@@ -134,6 +135,7 @@ func initialModel(fileContent string, client *miniflux.Client, initialCfg Config
 	m := model{
 		wpm:            initialCfg.WPM, // Use WPM from config
 		paused:         true,
+		rampSpeed:      initialCfg.RampSpeed,
 		minifluxClient: client,
 		searchInput:    ti,
 		urlInput:       urlTi,
@@ -239,6 +241,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case "s":
 				m.largeText = !m.largeText
+			case "r":
+				m.rampSpeed = !m.rampSpeed
 			case "up":
 				m.wpm += 50
 			case "down":
@@ -747,7 +751,12 @@ func (m model) viewReading() string {
 		status = "PAUSED (Press Space)"
 	}
 	
-		hudText := fmt.Sprintf("%s | %s\n%s\n%s | Size: s | Color: c", wpmStr, timeRemaining, progressBar, status)
+	rampStatus := "OFF"
+	if m.rampSpeed {
+		rampStatus = "ON"
+	}
+
+		hudText := fmt.Sprintf("%s | %s\n%s\n%s | Size: s | Color: c | Ramp: r (%s)", wpmStr, timeRemaining, progressBar, status, rampStatus)
 		
 			// Add navigation hint for Miniflux users
 			if m.minifluxClient != nil {
@@ -862,6 +871,17 @@ func (m model) currentDelay() time.Duration {
 	baseDelay := 60.0 / float64(m.wpm)
 	
 	word := m.content[m.index]
+
+	// Complexity Ramping
+	if m.rampSpeed {
+		length := len(word)
+		if length > 12 {
+			baseDelay *= 1.5
+		} else if length > 8 {
+			baseDelay *= 1.2
+		}
+	}
+
 	// Basic Punctuation detection
 	if strings.HasSuffix(word, ".") || strings.HasSuffix(word, "!") || strings.HasSuffix(word, "?") {
 		baseDelay *= 2.0
@@ -939,6 +959,7 @@ func (m model) renderTimeRemaining() string {
 type Config struct {
 	WPM           int    `json:"wpm"`
 	ThemeIndex    int    `json:"theme_index"`
+	RampSpeed     bool   `json:"ramp_speed"`
 	TotalArticles int    `json:"total_articles"`
 	TotalWords    int    `json:"total_words"`
 	MinifluxURL   string `json:"miniflux_url"`
@@ -1044,6 +1065,7 @@ func main() {
 		// Update cumulative stats and save
 		m.cfg.WPM = m.wpm
 		m.cfg.ThemeIndex = currentTheme
+		m.cfg.RampSpeed = m.rampSpeed
 		m.cfg.TotalArticles += m.sessionArticles
 		m.cfg.TotalWords += m.sessionWords
 		// MinifluxURL is updated earlier if in login state (m.cfg.MinifluxURL)
