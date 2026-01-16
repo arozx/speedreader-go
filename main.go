@@ -206,14 +206,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "o":
 				// Open in browser
 				var url string
-				if m.currentEntry != nil {
+				var entryID int64
+				
+				if m.currentEntry != nil { // If in reading state (or was reading)
 					url = m.currentEntry.URL
-				} else if m.state == StateBrowsing && len(m.entries) > 0 {
-					url = m.entries[m.cursor].URL
+					entryID = m.currentEntry.ID
+				} else if m.state == StateBrowsing && len(m.entries) > 0 { // If in browsing state
+					selectedEntry := m.entries[m.cursor]
+					url = selectedEntry.URL
+					entryID = selectedEntry.ID
 				}
 				
 				if url != "" {
 					_ = browser.OpenURL(url)
+					// If it's a YouTube link and client is available, mark as read
+					if m.minifluxClient != nil && entryID != 0 && (strings.Contains(url, "youtube.com/watch?v=") || strings.Contains(url, "youtu.be/")) {
+						// This should return a command to mark as read
+						return m, markAsRead(m.minifluxClient, entryID)
+					}
 				}
 
 			case "f":
