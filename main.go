@@ -24,6 +24,7 @@ const (
 	StateSearching
 	StateYouTubeLink
 	StateLogin
+	StateHelp
 )
 
 // Styles
@@ -76,8 +77,10 @@ type model struct {
 	paused         bool
 	largeText      bool
 	rampSpeed      bool
+	zenMode        bool
 	width          int
 	height         int
+	previousState  int
 	err            error
 	
 	// Miniflux
@@ -136,6 +139,7 @@ func initialModel(fileContent string, client *miniflux.Client, initialCfg Config
 		wpm:            initialCfg.WPM, // Use WPM from config
 		paused:         true,
 		rampSpeed:      initialCfg.RampSpeed,
+		zenMode:        initialCfg.ZenMode,
 		minifluxClient: client,
 		searchInput:    ti,
 		urlInput:       urlTi,
@@ -187,7 +191,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "ctrl+c", "q":
 				return m, tea.Quit
+			case "?":
+				m.paused = true // Pause if reading
+				m.previousState = m.state
+				m.state = StateHelp
+				return m, nil
 			case "esc":
+				if m.state == StateHelp {
+					// Return to previous state
+					m.state = m.previousState
+					return m, nil
+				}
 				if m.state == StateReading && m.minifluxClient != nil {
 					m.state = StateBrowsing
 					m.paused = true
@@ -253,6 +267,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.largeText = !m.largeText
 			case "r":
 				m.rampSpeed = !m.rampSpeed
+			case "z":
+				m.zenMode = !m.zenMode
 			case "up":
 				m.wpm += 50
 			case "down":
@@ -269,6 +285,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.index < 0 {
 					m.index = 0
 				}
+			case "g":
+				m.index = 0
+			case "G":
+				m.index = len(m.content) - 1
 			}
 		} else if m.state == StateBrowsing {
 			switch msg.String() {
@@ -277,6 +297,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.searchInput.Focus()
 				m.searchInput.SetValue("")
 				return m, textinput.Blink
+			case "g":
+				m.cursor = 0
+				m.listOffset = 0
+			case "G":
+				if len(m.entries) > 0 {
+					m.cursor = len(m.entries) - 1
+					
+					// Recalculate offset to keep cursor visible (logic similar to 'down' key)
+					headerHeight := 3
+					visibleHeight := m.height - headerHeight
+					// Top indicator space
+					if m.cursor > visibleHeight { // If we are jumping far down, top indicator will likely be needed
+						visibleHeight-- 
+					}
+					visibleHeight-- // Reserve for bottom indicator
+					
+					scrollOff := 2
+					if visibleHeight < scrollOff+1 {
+						visibleHeight = scrollOff + 1
+					}
+					
+					// Place cursor at bottom with scrollOff
+					m.listOffset = m.cursor - (visibleHeight - 1 - scrollOff)
+					if m.listOffset < 0 {
+						m.listOffset = 0
+					}
+				}
 			case "up", "k":
 				if m.cursor > 0 {
 					m.cursor--
@@ -527,6 +574,8 @@ func (m model) View() string {
 		return m.viewYouTubeLink()
 	} else if m.state == StateLogin {
 		return m.viewLogin()
+	} else if m.state == StateHelp {
+		return m.viewHelp()
 	}
 	return m.viewReading()
 }
@@ -563,7 +612,7 @@ func (m model) viewBrowsing() string {
 
 		// Render scroll indicator for top
 		if m.listOffset > 0 {
-			sb.WriteString(normalStyle.Render("  ▲ (more above)\n"))
+			sb.WriteString(normalStyle.Render(strings.Repeat(" ", 15) + "▲ (more above)") + "\n")
 			visibleHeight-- // Account for scroll indicator line
 		}
 
@@ -583,14 +632,24 @@ func (m model) viewBrowsing() string {
 			}
 			
 			dateStr := shortDate(entry.Date)
-			dateWidth := lipgloss.Width(dateStr)
+			// Fixed width for date column (max length of "Jan 02 '06" is 10)
+			dateWidth := 10 
+			if len(dateStr) < dateWidth {
+				dateStr = dateStr + strings.Repeat(" ", dateWidth-len(dateStr))
+			}
 			
+			starStr := "  "
+			if entry.Starred {
+				starStr = "★ "
+			}
+
 			// Calculate available width for title
-			// Width = Screen Width - Cursor(2) - Spacer(1) - Date - RightBuffer(1)
-			availableWidth := m.width - 2 - 1 - dateWidth - 1
+			// Fixed prefix width: Cursor(1) + Space(1) + Date(10) + Space(1) + Star(2) = 15
+			prefixWidth := 15
+			availableWidth := m.width - prefixWidth - 1 // -1 Buffer
 			if availableWidth < 10 { availableWidth = 10 }
 
-			title := entry.Title
+			title := strings.ReplaceAll(strings.ReplaceAll(entry.Title, "\n", " "), "\r", "")
 			if lipgloss.Width(title) > availableWidth { 
 				// Truncate
 				targetWidth := availableWidth - 1 // -1 for ellipsis
@@ -609,34 +668,19 @@ func (m model) viewBrowsing() string {
 				title = sbTrunc.String() + "…"
 			}
 			
-			// Build the line with manual spacing for right alignment
-			// Used Width = Cursor(2) + Star(2) + Title + Date
-			// Star takes 2 chars if present ("★ "), else 0
-			
-			starStr := ""
-			if entry.Starred {
-				starStr = "★ "
-			}
-			
-			usedWidth := 2 + lipgloss.Width(starStr) + lipgloss.Width(title) + dateWidth
-			spacerLen := m.width - usedWidth - 1 // -1 buffer
-			if spacerLen < 1 { spacerLen = 1 }
-			
-			spacer := strings.Repeat(" ", spacerLen)
-			
 			// Use lineStyle (grey) for date
 			dateRendered := lineStyle.Render(dateStr)
 			starRendered := lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render(starStr) // Gold color
 			
-			sb.WriteString(fmt.Sprintf("%s %s%s%s%s\n", cursor, starRendered, style.Render(title), spacer, dateRendered))
+			sb.WriteString(fmt.Sprintf("%s %s %s%s\n", cursor, dateRendered, starRendered, style.Render(title)))
 		}
 
 		// Render scroll indicator for bottom
 		if m.listOffset+visibleHeight < len(m.entries) || (len(m.entries) < m.totalEntries) {
 			if m.fetchingMore {
-				sb.WriteString(normalStyle.Render("  ... loading more ...\n"))
+				sb.WriteString(normalStyle.Render(strings.Repeat(" ", 15) + "... loading more ...") + "\n")
 			} else {
-				sb.WriteString(normalStyle.Render("  ▼ (more below)\n"))
+				sb.WriteString(normalStyle.Render(strings.Repeat(" ", 15) + "▼ (more below)") + "\n")
 			}
 		}
 	} else {
@@ -698,6 +742,54 @@ func (m model) viewLogin() string {
 
 
 	sb.WriteString("(Enter to switch fields, or submit. Esc to quit)")
+
+	return appStyle.Width(m.width).Height(m.height).Render(sb.String())
+}
+
+func (m model) viewHelp() string {
+	var sb strings.Builder
+	
+	sb.WriteString(lipgloss.NewStyle().Bold(true).Render("Help & Keybindings") + "\n\n")
+	
+	keys := []struct {
+		Key  string
+		Desc string
+	}{
+		{"Space", "Pause / Resume Reading"},
+		{"Up / Down", "Increase / Decrease WPM"},
+		{"Left / Right", "Rewind / Fast Forward (10 words)"},
+		{"g / G", "Jump to Start / End"},
+		{"s", "Toggle Large Text Size"},
+		{"r", "Toggle Speed Ramping"},
+		{"z", "Toggle Zen Mode"},
+		{"c", "Cycle Themes"},
+		{"/", "Search Articles (Miniflux)"},
+		{"j / k", "Navigate Article List"},
+		{"Enter", "Select Article"},
+		{"o", "Open Article in Browser"},
+		{"f", "Toggle Starred"},
+		{"m", "Mark as Read"},
+		{"y", "Filter YouTube Videos"},
+		{"Esc", "Back / Quit"},
+		{"?", "Show this Help"},
+		{"q", "Quit Application"},
+	}
+
+	// Calculate max key width for alignment
+	maxKeyLen := 0
+	for _, k := range keys {
+		if len(k.Key) > maxKeyLen {
+			maxKeyLen = len(k.Key)
+		}
+	}
+
+	for _, k := range keys {
+		padding := strings.Repeat(" ", maxKeyLen-len(k.Key)+2)
+		keyStr := focusStyle.Render(k.Key)
+		sb.WriteString(fmt.Sprintf("%s%s%s\n", keyStr, padding, k.Desc))
+	}
+	
+	sb.WriteString("\n" + lipgloss.NewStyle().Faint(true).Render("Press Esc to close."))
 
 	return appStyle.Width(m.width).Height(m.height).Render(sb.String())
 }
@@ -766,17 +858,25 @@ func (m model) viewReading() string {
 		rampStatus = "ON"
 	}
 
-		hudText := fmt.Sprintf("%s | %s\n%s\n%s | Size: s | Color: c | Ramp: r (%s)", wpmStr, timeRemaining, progressBar, status, rampStatus)
+	hudText := fmt.Sprintf("%s | %s\n%s\n%s | Size: s | Color: c | Ramp: r (%s) | Zen: z", wpmStr, timeRemaining, progressBar, status, rampStatus)
 		
-			// Add navigation hint for Miniflux users
-			if m.minifluxClient != nil {
-				hudText += " | Esc: Back | o: Open | f: Star"
-			}	
-		if m.currentEntry != nil {
-			hudText = fmt.Sprintf("%s\nTitle: %s", hudText, m.currentEntry.Title)
-		}
-			hudRendered := hudStyle.Width(m.width).Render(hudText)
-			hudHeight := lipgloss.Height(hudRendered)
+	// Add navigation hint for Miniflux users
+	if m.minifluxClient != nil {
+		hudText += " | Esc: Back | o: Open | f: Star"
+	}	
+	if m.currentEntry != nil {
+		hudText = fmt.Sprintf("%s\nTitle: %s", hudText, m.currentEntry.Title)
+	}
+	
+	var hudRendered string
+	var hudHeight int
+	
+	if !m.zenMode {
+		hudRendered = hudStyle.Width(m.width).Render(hudText)
+		hudHeight = lipgloss.Height(hudRendered)
+	} else {
+		hudHeight = 0
+	}
 
 	// 4. Vertical Layout Calculation
 	totalHeight := m.height
@@ -789,7 +889,7 @@ func (m model) viewReading() string {
 	verticalGap := 1
 	
 	contentBlockHeight := 1 
-	if showSeparators {
+	if showSeparators && !m.zenMode {
 		contentBlockHeight = 1 + (1 + verticalGap) * 2 
 	}
 
@@ -812,16 +912,16 @@ func (m model) viewReading() string {
 	}
 
 	// Content Block
-	if showSeparators {
+	if showSeparators && !m.zenMode {
 		sb.WriteString(separator + "\n")
 		for i := 0; i < verticalGap; i++ {
 			sb.WriteString(blankLine + "\n")
 		}
 	}
 	
-sb.WriteString(contentLine + "\n")
+	sb.WriteString(contentLine + "\n")
 	
-	if showSeparators {
+	if showSeparators && !m.zenMode {
 		for i := 0; i < verticalGap; i++ {
 			sb.WriteString(blankLine + "\n")
 		}
@@ -834,7 +934,9 @@ sb.WriteString(contentLine + "\n")
 	}
 
 	// HUD
-	sb.WriteString(hudRendered)
+	if !m.zenMode {
+		sb.WriteString(hudRendered)
+	}
 
 	return sb.String()
 }
@@ -970,6 +1072,7 @@ type Config struct {
 	WPM           int    `json:"wpm"`
 	ThemeIndex    int    `json:"theme_index"`
 	RampSpeed     bool   `json:"ramp_speed"`
+	ZenMode       bool   `json:"zen_mode"`
 	TotalArticles int    `json:"total_articles"`
 	TotalWords    int    `json:"total_words"`
 	MinifluxURL   string `json:"miniflux_url"`
@@ -1076,6 +1179,7 @@ func main() {
 		m.cfg.WPM = m.wpm
 		m.cfg.ThemeIndex = currentTheme
 		m.cfg.RampSpeed = m.rampSpeed
+		m.cfg.ZenMode = m.zenMode
 		m.cfg.TotalArticles += m.sessionArticles
 		m.cfg.TotalWords += m.sessionWords
 		// MinifluxURL is updated earlier if in login state (m.cfg.MinifluxURL)
