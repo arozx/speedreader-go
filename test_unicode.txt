@@ -1,0 +1,7 @@
+Hello World
+José
+Café
+日本語
+This contains an emoji 🚀
+Wide characters: ＡＢＣ
+Mixed: A🚀B日本語C
