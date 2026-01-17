@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/k3a/html2text"
 	"github.com/pkg/browser"
 	"github.com/zalando/go-keyring"
@@ -32,30 +32,30 @@ var (
 	bgColor = lipgloss.Color("") // Initial background is terminal default
 
 	focusStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("196")). // Red
-		Background(bgColor).
-		Bold(true)
+			Foreground(lipgloss.Color("196")). // Red
+			Background(bgColor).
+			Bold(true)
 
 	normalStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("255")). // White
-		Background(bgColor)
+			Foreground(lipgloss.Color("255")). // White
+			Background(bgColor)
 
 	hudStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("240")). // Grey
-		Background(bgColor).
-		Align(lipgloss.Center)
+			Foreground(lipgloss.Color("240")). // Grey
+			Background(bgColor).
+			Align(lipgloss.Center)
 
 	lineStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("238")). // Dark Grey
-		Background(bgColor)
+			Foreground(lipgloss.Color("238")). // Dark Grey
+			Background(bgColor)
 
 	appStyle = lipgloss.NewStyle().
-		Background(bgColor).
-		Foreground(lipgloss.Color("#FFFFFF"))
+			Background(bgColor).
+			Foreground(lipgloss.Color("#FFFFFF"))
 
 	listSelectedStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("196")).
-		Bold(true)
+				Foreground(lipgloss.Color("196")).
+				Bold(true)
 
 	// Theme Management
 	currentTheme = 0
@@ -70,19 +70,19 @@ var (
 )
 
 type model struct {
-	state          int
-	content        []string
-	index          int
-	wpm            int
-	paused         bool
-	largeText      bool
-	rampSpeed      bool
-	zenMode        bool
-	width          int
-	height         int
-	previousState  int
-	err            error
-	
+	state         int
+	content       []string
+	index         int
+	wpm           int
+	paused        bool
+	largeText     bool
+	rampSpeed     bool
+	zenMode       bool
+	width         int
+	height        int
+	previousState int
+	err           error
+
 	// Miniflux
 	minifluxClient *miniflux.Client
 	entries        []*miniflux.Entry
@@ -94,7 +94,7 @@ type model struct {
 	listOffset     int // For scrolling in browsing mode
 	searchInput    textinput.Model
 	urlInput       textinput.Model // For Miniflux URL input
-	
+
 	// Statistics
 	// Statistics
 	sessionArticles int
@@ -102,7 +102,7 @@ type model struct {
 
 	// Filters
 	filterYouTube bool
-	
+
 	// Configuration
 	cfg Config
 }
@@ -212,16 +212,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				return m, tea.Quit
-			
+
 			case "c":
 				currentTheme = (currentTheme + 1) % len(themes)
 				updateTheme(themes[currentTheme])
-			
+
 			case "o":
 				// Open in browser
 				var url string
 				var entryID int64
-				
+
 				if m.currentEntry != nil { // If in reading state (or was reading)
 					url = m.currentEntry.URL
 					entryID = m.currentEntry.ID
@@ -230,7 +230,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					url = selectedEntry.URL
 					entryID = selectedEntry.ID
 				}
-				
+
 				if url != "" {
 					_ = browser.OpenURL(url)
 					// If it's a YouTube link and client is available, mark as read
@@ -269,9 +269,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.rampSpeed = !m.rampSpeed
 			case "z":
 				m.zenMode = !m.zenMode
-			case "up":
+			case "up", "k":
 				m.wpm += 50
-			case "down":
+			case "down", "j":
 				if m.wpm > 50 {
 					m.wpm -= 50
 				}
@@ -303,21 +303,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "G":
 				if len(m.entries) > 0 {
 					m.cursor = len(m.entries) - 1
-					
+
 					// Recalculate offset to keep cursor visible (logic similar to 'down' key)
 					headerHeight := 3
 					visibleHeight := m.height - headerHeight
 					// Top indicator space
 					if m.cursor > visibleHeight { // If we are jumping far down, top indicator will likely be needed
-						visibleHeight-- 
+						visibleHeight--
 					}
 					visibleHeight-- // Reserve for bottom indicator
-					
+
 					scrollOff := 2
 					if visibleHeight < scrollOff+1 {
 						visibleHeight = scrollOff + 1
 					}
-					
+
 					// Place cursor at bottom with scrollOff
 					m.listOffset = m.cursor - (visibleHeight - 1 - scrollOff)
 					if m.listOffset < 0 {
@@ -381,7 +381,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.loading = false // No content to fetch
 						return m, nil
 					}
-					
+
 					return m, fetchContent(selected.Content)
 				}
 			case "y":
@@ -433,7 +433,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.err = fmt.Errorf("failed to save token: %w", err)
 						}
 					}
-					
+
 					// Try to connect and switch state
 					if minifluxURL != "" && minifluxToken != "" {
 						m.minifluxClient = miniflux.NewClient(minifluxURL, minifluxToken)
@@ -460,7 +460,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
-			
+
 			// Handle updates for the focused input
 			if m.urlInput.Focused() {
 				m.urlInput, cmd = m.urlInput.Update(msg)
@@ -480,7 +480,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.index >= len(m.content)-1 {
 			m.paused = true
-			
+
 			// Increment stats
 			m.sessionArticles++
 			m.sessionWords += len(m.content)
@@ -507,14 +507,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.totalEntries = msg.result.Total // Update total just in case
 		}
 		m.fetchingMore = false
-	
+
 	case contentMsg:
 		m.content = strings.Fields(string(msg))
 		m.state = StateReading
 		m.index = 0
 		m.paused = true
 		m.loading = false
-	
+
 	case errMsg:
 		m.err = msg
 		m.loading = false
@@ -533,11 +533,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.entries = newEntries
 			m.totalEntries-- // Decrement total
-			
+
 			// Adjust cursor if necessary
 			if m.cursor >= len(m.entries) {
 				m.cursor = len(m.entries) - 1
-				if m.cursor < 0 { m.cursor = 0 }
+				if m.cursor < 0 {
+					m.cursor = 0
+				}
 			}
 		}
 
@@ -582,7 +584,7 @@ func (m model) View() string {
 
 func (m model) viewBrowsing() string {
 	var sb strings.Builder
-	
+
 	headerText := "Miniflux Unread Entries"
 	if m.filterYouTube {
 		headerText += " (YouTube Only)"
@@ -603,7 +605,7 @@ func (m model) viewBrowsing() string {
 		sb.WriteString(fmt.Sprintf("Error: %v", m.err))
 	} else if len(m.entries) > 0 {
 		// Adjust listOffset if entries are fewer than visibleHeight
-		if len(m.entries) < m.listOffset + visibleHeight {
+		if len(m.entries) < m.listOffset+visibleHeight {
 			m.listOffset = len(m.entries) - visibleHeight
 			if m.listOffset < 0 {
 				m.listOffset = 0
@@ -612,7 +614,7 @@ func (m model) viewBrowsing() string {
 
 		// Render scroll indicator for top
 		if m.listOffset > 0 {
-			sb.WriteString(normalStyle.Render(strings.Repeat(" ", 15) + "▲ (more above)") + "\n")
+			sb.WriteString(normalStyle.Render(strings.Repeat(" ", 15)+"▲ (more above)") + "\n")
 			visibleHeight-- // Account for scroll indicator line
 		}
 
@@ -630,14 +632,14 @@ func (m model) viewBrowsing() string {
 				cursor = ">"
 				style = listSelectedStyle
 			}
-			
+
 			dateStr := shortDate(entry.Date)
 			// Fixed width for date column (max length of "Jan 02 '06" is 10)
-			dateWidth := 10 
+			dateWidth := 10
 			if len(dateStr) < dateWidth {
 				dateStr = dateStr + strings.Repeat(" ", dateWidth-len(dateStr))
 			}
-			
+
 			starStr := "  "
 			if entry.Starred {
 				starStr = "★ "
@@ -647,13 +649,17 @@ func (m model) viewBrowsing() string {
 			// Fixed prefix width: Cursor(1) + Space(1) + Date(10) + Space(1) + Star(2) = 15
 			prefixWidth := 15
 			availableWidth := m.width - prefixWidth - 1 // -1 Buffer
-			if availableWidth < 10 { availableWidth = 10 }
+			if availableWidth < 10 {
+				availableWidth = 10
+			}
 
 			title := strings.ReplaceAll(strings.ReplaceAll(entry.Title, "\n", " "), "\r", "")
-			if lipgloss.Width(title) > availableWidth { 
+			if lipgloss.Width(title) > availableWidth {
 				// Truncate
 				targetWidth := availableWidth - 1 // -1 for ellipsis
-				if targetWidth < 0 { targetWidth = 0 }
+				if targetWidth < 0 {
+					targetWidth = 0
+				}
 
 				var currentWidth int
 				var sbTrunc strings.Builder
@@ -667,20 +673,20 @@ func (m model) viewBrowsing() string {
 				}
 				title = sbTrunc.String() + "…"
 			}
-			
+
 			// Use lineStyle (grey) for date
 			dateRendered := lineStyle.Render(dateStr)
 			starRendered := lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render(starStr) // Gold color
-			
+
 			sb.WriteString(fmt.Sprintf("%s %s %s%s\n", cursor, dateRendered, starRendered, style.Render(title)))
 		}
 
 		// Render scroll indicator for bottom
 		if m.listOffset+visibleHeight < len(m.entries) || (len(m.entries) < m.totalEntries) {
 			if m.fetchingMore {
-				sb.WriteString(normalStyle.Render(strings.Repeat(" ", 15) + "... loading more ...") + "\n")
+				sb.WriteString(normalStyle.Render(strings.Repeat(" ", 15)+"... loading more ...") + "\n")
 			} else {
-				sb.WriteString(normalStyle.Render(strings.Repeat(" ", 15) + "▼ (more below)") + "\n")
+				sb.WriteString(normalStyle.Render(strings.Repeat(" ", 15)+"▼ (more below)") + "\n")
 			}
 		}
 	} else {
@@ -698,9 +704,9 @@ func (m model) viewSearching() string {
 	sb.WriteString(header + "\n\n")
 
 	sb.WriteString(m.searchInput.View())
-	
+
 	sb.WriteString("\n\n(Enter to search, Esc to cancel)")
-	
+
 	return appStyle.Width(m.width).Height(m.height).Render(sb.String())
 }
 
@@ -710,7 +716,7 @@ func (m model) viewYouTubeLink() string {
 	}
 
 	var sb strings.Builder
-	
+
 	sb.WriteString(lipgloss.NewStyle().Bold(true).Render("YouTube Video Link") + "\n\n")
 	sb.WriteString(fmt.Sprintf("Title: %s\n\n", m.currentEntry.Title))
 	sb.WriteString(fmt.Sprintf("URL: %s\n\n", m.currentEntry.URL))
@@ -721,7 +727,7 @@ func (m model) viewYouTubeLink() string {
 
 func (m model) viewLogin() string {
 	var sb strings.Builder
-	
+
 	sb.WriteString(lipgloss.NewStyle().Bold(true).Render("Miniflux Login") + "\n\n")
 
 	if m.err != nil {
@@ -740,7 +746,6 @@ func (m model) viewLogin() string {
 		sb.WriteString(strings.Repeat("*", len(m.searchInput.Value())) + "\n\n")
 	}
 
-
 	sb.WriteString("(Enter to switch fields, or submit. Esc to quit)")
 
 	return appStyle.Width(m.width).Height(m.height).Render(sb.String())
@@ -748,15 +753,15 @@ func (m model) viewLogin() string {
 
 func (m model) viewHelp() string {
 	var sb strings.Builder
-	
+
 	sb.WriteString(lipgloss.NewStyle().Bold(true).Render("Help & Keybindings") + "\n\n")
-	
+
 	keys := []struct {
 		Key  string
 		Desc string
 	}{
 		{"Space", "Pause / Resume Reading"},
-		{"Up / Down", "Increase / Decrease WPM"},
+		{"k / j", "Increase / Decrease WPM"},
 		{"Left / Right", "Rewind / Fast Forward (10 words)"},
 		{"g / G", "Jump to Start / End"},
 		{"s", "Toggle Large Text Size"},
@@ -788,7 +793,7 @@ func (m model) viewHelp() string {
 		keyStr := focusStyle.Render(k.Key)
 		sb.WriteString(fmt.Sprintf("%s%s%s\n", keyStr, padding, k.Desc))
 	}
-	
+
 	sb.WriteString("\n" + lipgloss.NewStyle().Faint(true).Render("Press Esc to close."))
 
 	return appStyle.Width(m.width).Height(m.height).Render(sb.String())
@@ -818,7 +823,7 @@ func (m model) viewReading() string {
 
 	// ORP Alignment Logic
 	centerX := m.width / 2
-	
+
 	leftStr := normalStyle.Render(left)
 	focusStr := focusStyle.Render(focus)
 	rightStr := normalStyle.Render(right)
@@ -838,12 +843,12 @@ func (m model) viewReading() string {
 		rightPadLen = 0
 	}
 	rightPadding := normalStyle.Render(strings.Repeat(" ", rightPadLen))
-	
+
 	contentLine := leftPadding + leftStr + focusStr + rightStr + rightPadding
 
 	// 2. Prepare Separators & Gaps
 	separator := lineStyle.Render(strings.Repeat("─", m.width))
-	
+
 	// 3. Prepare HUD
 	progressBar := m.renderProgressBar()
 	timeRemaining := m.renderTimeRemaining()
@@ -852,25 +857,25 @@ func (m model) viewReading() string {
 	if m.paused {
 		status = "PAUSED (Press Space)"
 	}
-	
+
 	rampStatus := "OFF"
 	if m.rampSpeed {
 		rampStatus = "ON"
 	}
 
 	hudText := fmt.Sprintf("%s | %s\n%s\n%s | Size: s | Color: c | Ramp: r (%s) | Zen: z", wpmStr, timeRemaining, progressBar, status, rampStatus)
-		
+
 	// Add navigation hint for Miniflux users
 	if m.minifluxClient != nil {
 		hudText += " | Esc: Back | o: Open | f: Star"
-	}	
+	}
 	if m.currentEntry != nil {
 		hudText = fmt.Sprintf("%s\nTitle: %s", hudText, m.currentEntry.Title)
 	}
-	
+
 	var hudRendered string
 	var hudHeight int
-	
+
 	if !m.zenMode {
 		hudRendered = hudStyle.Width(m.width).Render(hudText)
 		hudHeight = lipgloss.Height(hudRendered)
@@ -884,20 +889,20 @@ func (m model) viewReading() string {
 	if mainHeight < 0 {
 		mainHeight = 0
 	}
-	
-	showSeparators := m.height > 10 
+
+	showSeparators := m.height > 10
 	verticalGap := 1
-	
-	contentBlockHeight := 1 
+
+	contentBlockHeight := 1
 	if showSeparators && !m.zenMode {
-		contentBlockHeight = 1 + (1 + verticalGap) * 2 
+		contentBlockHeight = 1 + (1+verticalGap)*2
 	}
 
 	topPadding := (mainHeight - contentBlockHeight) / 2
 	if topPadding < 0 {
 		topPadding = 0
 	}
-	
+
 	bottomPadding := mainHeight - contentBlockHeight - topPadding
 	if bottomPadding < 0 {
 		bottomPadding = 0
@@ -918,9 +923,9 @@ func (m model) viewReading() string {
 			sb.WriteString(blankLine + "\n")
 		}
 	}
-	
+
 	sb.WriteString(contentLine + "\n")
-	
+
 	if showSeparators && !m.zenMode {
 		for i := 0; i < verticalGap; i++ {
 			sb.WriteString(blankLine + "\n")
@@ -981,7 +986,7 @@ func toggleStarred(client *miniflux.Client, entryID int64) tea.Cmd {
 
 func (m model) currentDelay() time.Duration {
 	baseDelay := 60.0 / float64(m.wpm)
-	
+
 	word := m.content[m.index]
 
 	// Complexity Ramping
@@ -1000,7 +1005,7 @@ func (m model) currentDelay() time.Duration {
 	} else if strings.HasSuffix(word, ",") || strings.HasSuffix(word, ";") {
 		baseDelay *= 1.5
 	}
-	
+
 	// Convert seconds to duration
 	return time.Duration(baseDelay * float64(time.Second))
 }
@@ -1054,7 +1059,7 @@ func (m model) renderProgressBar() string {
 	percent := float64(m.index) / float64(total)
 	barWidth := 40
 	filled := int(percent * float64(barWidth))
-	
+
 	bar := "[" + strings.Repeat("=", filled) + strings.Repeat("-", barWidth-filled) + "]"
 	return fmt.Sprintf("%s %d%%", bar, int(percent*100))
 }
@@ -1063,7 +1068,7 @@ func (m model) renderTimeRemaining() string {
 	wordsLeft := len(m.content) - m.index
 	minutes := float64(wordsLeft) / float64(m.wpm)
 	seconds := int(minutes * 60)
-	
+
 	return fmt.Sprintf("Time Remaining: %02d:%02d", seconds/60, seconds%60)
 }
 
@@ -1129,11 +1134,13 @@ func main() {
 	if currentTheme >= len(themes) {
 		currentTheme = 0
 	}
-	
+
 	updateTheme(themes[currentTheme]) // Apply initial theme
 
 	initialWPM := cfg.WPM
-	if initialWPM <= 0 { initialWPM = 300 }
+	if initialWPM <= 0 {
+		initialWPM = 300
+	}
 
 	// 2. Try to get Miniflux credentials
 	if fileContent == "" { // Only try Miniflux if no local file is given
@@ -1160,20 +1167,20 @@ func main() {
 	}
 
 	m := initialModel(fileContent, client, cfg)
-	
+
 	// If starting in login state, pre-fill from loaded config
 	if m.state == StateLogin {
 		m.urlInput.SetValue(minifluxURL)
 		// Token is not pre-filled into text input for security
 	}
-	
+
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	finalModel, err := p.Run()
 	if err != nil {
 		fmt.Printf("Alas, there's been an error: %v", err)
 		os.Exit(1)
 	}
-	
+
 	if m, ok := finalModel.(model); ok {
 		// Update cumulative stats and save
 		m.cfg.WPM = m.wpm
@@ -1184,7 +1191,7 @@ func main() {
 		m.cfg.TotalWords += m.sessionWords
 		// MinifluxURL is updated earlier if in login state (m.cfg.MinifluxURL)
 		saveConfig(m.cfg)
-		
+
 		// Print Session Summary
 		fmt.Println("\n--- Session Summary ---")
 		fmt.Printf("Articles Read: %d\n", m.sessionArticles)
@@ -1210,7 +1217,7 @@ func toFullWidth(s string) string {
 
 func updateTheme(bg lipgloss.Color) {
 	// Determine foreground color based on background brightness
-	fgColor := lipgloss.Color("255") // White text default
+	fgColor := lipgloss.Color("255")  // White text default
 	hudColor := lipgloss.Color("240") // Grey default
 
 	// Special handling for default terminal background
@@ -1220,7 +1227,7 @@ func updateTheme(bg lipgloss.Color) {
 		hudStyle = hudStyle.Background(lipgloss.NoColor{})
 		lineStyle = lineStyle.Background(lipgloss.NoColor{})
 		appStyle = appStyle.Background(lipgloss.NoColor{})
-		
+
 		// When background is default, we want our text to be readable on whatever the user has.
 		// For consistency, let's keep text bright (white) unless it's a light theme.
 		// So the fgColor logic still needs to run.
@@ -1229,10 +1236,10 @@ func updateTheme(bg lipgloss.Color) {
 		// Normal theme logic
 		// Very rough heuristic for light themes
 		if bg == lipgloss.Color("#ffffff") || bg == lipgloss.Color("#fbf1c7") {
-			fgColor = lipgloss.Color("0")       // Black text
-			hudColor = lipgloss.Color("238")    // Darker grey for HUD
+			fgColor = lipgloss.Color("0")    // Black text
+			hudColor = lipgloss.Color("238") // Darker grey for HUD
 		}
-		
+
 		focusStyle = focusStyle.Background(bg)
 		normalStyle = normalStyle.Background(bg)
 		hudStyle = hudStyle.Background(bg)
