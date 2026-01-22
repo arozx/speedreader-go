@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,6 +27,17 @@ const (
 	StateLogin
 	StateHelp
 )
+
+// Search Modes
+const (
+	SearchGeneral = iota
+	SearchFeed
+	SearchAuthor
+	SearchCategory
+	SearchTags
+)
+
+var searchModes = []string{"General", "Blog Title", "Author", "Category", "Tags"}
 
 // Styles
 var (
@@ -95,13 +107,23 @@ type model struct {
 	searchInput    textinput.Model
 	urlInput       textinput.Model // For Miniflux URL input
 
+	// Search
+	searchMode   int
+	categories   miniflux.Categories
+	feeds        miniflux.Feeds
+	filteredList []string
+	filteredIDs  []int64
+	searchCursor int
+
 	// Statistics
 	// Statistics
 	sessionArticles int
 	sessionWords    int
 
 	// Filters
-	filterYouTube bool
+	filterYouTube     bool
+	currentCategoryID int64
+	currentFeedID     int64
 
 	// Configuration
 	cfg Config
@@ -112,6 +134,8 @@ type entriesMsg struct {
 	result *miniflux.EntryResultSet
 	offset int
 }
+type categoriesMsg miniflux.Categories
+type feedsMsg miniflux.Feeds
 type contentMsg string
 type errMsg error
 type markReadMsg struct {
@@ -176,7 +200,7 @@ func saveMinifluxToken(token string) error {
 
 func (m model) Init() tea.Cmd {
 	if m.state == StateBrowsing && m.minifluxClient != nil {
-		return fetchEntries(m.minifluxClient, "", 0)
+		return fetchEntries(m.minifluxClient, "", 0, 0, 0)
 	}
 	return nil
 }
@@ -345,7 +369,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					} else if m.searchInput.Value() != "" {
 						search = m.searchInput.Value()
 					}
-					cmd = fetchEntries(m.minifluxClient, search, len(m.entries))
+					cmd = fetchEntries(m.minifluxClient, search, m.currentCategoryID, m.currentFeedID, len(m.entries))
 				}
 
 				// Ensure cursor is visible with scrolloff
@@ -391,7 +415,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					searchTerm = "youtube.com/watch?v=|youtu.be/" // More specific URL patterns
 				}
 				m.loading = true
-				return m, fetchEntries(m.minifluxClient, searchTerm, 0)
+				return m, fetchEntries(m.minifluxClient, searchTerm, m.currentCategoryID, m.currentFeedID, 0)
 			case "m":
 				// Mark as read manually
 				if m.minifluxClient != nil && len(m.entries) > 0 {
@@ -404,13 +428,109 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter":
 				m.state = StateBrowsing
 				m.loading = true
-				return m, fetchEntries(m.minifluxClient, m.searchInput.Value(), 0)
+
+				// Reset filters
+				m.currentCategoryID = 0
+				m.currentFeedID = 0
+
+				searchTerm := m.searchInput.Value()
+
+				if m.searchMode == SearchCategory {
+					if len(m.filteredIDs) > 0 && m.searchCursor < len(m.filteredIDs) {
+						m.currentCategoryID = m.filteredIDs[m.searchCursor]
+						searchTerm = "" // Clear text search when selecting ID
+					} else {
+						// Invalid selection
+						m.state = StateSearching
+						m.loading = false
+						return m, nil
+					}
+				} else if m.searchMode == SearchFeed {
+					if len(m.filteredIDs) > 0 && m.searchCursor < len(m.filteredIDs) {
+						m.currentFeedID = m.filteredIDs[m.searchCursor]
+						searchTerm = ""
+					} else {
+						m.state = StateSearching
+						m.loading = false
+						return m, nil
+					}
+				}
+
+				return m, fetchEntries(m.minifluxClient, searchTerm, m.currentCategoryID, m.currentFeedID, 0)
+
 			case "esc":
 				m.state = StateBrowsing
 				m.searchInput.Blur()
 				return m, nil
+
+			case "tab":
+				m.searchMode = (m.searchMode + 1) % len(searchModes)
+				m.searchInput.SetValue("")
+				m.searchCursor = 0
+				m.filteredList = nil
+				m.filteredIDs = nil
+
+				var cmd tea.Cmd
+				if m.searchMode == SearchCategory {
+					if len(m.categories) == 0 {
+						cmd = fetchCategories(m.minifluxClient)
+					} else {
+						for _, c := range m.categories {
+							m.filteredList = append(m.filteredList, c.Title)
+							m.filteredIDs = append(m.filteredIDs, c.ID)
+						}
+					}
+				} else if m.searchMode == SearchFeed {
+					if len(m.feeds) == 0 {
+						cmd = fetchFeeds(m.minifluxClient)
+					} else {
+						for _, f := range m.feeds {
+							m.filteredList = append(m.filteredList, f.Title)
+							m.filteredIDs = append(m.filteredIDs, f.ID)
+						}
+					}
+				}
+				return m, cmd
+
+			case "up":
+				if m.searchCursor > 0 {
+					m.searchCursor--
+				}
+				return m, nil
+
+			case "down":
+				if len(m.filteredList) > 0 && m.searchCursor < len(m.filteredList)-1 {
+					m.searchCursor++
+				}
+				return m, nil
 			}
+
 			m.searchInput, cmd = m.searchInput.Update(msg)
+
+			// Post-update filtering
+			if m.searchMode == SearchCategory || m.searchMode == SearchFeed {
+				term := strings.ToLower(m.searchInput.Value())
+				m.filteredList = nil
+				m.filteredIDs = nil
+				if m.searchMode == SearchCategory {
+					for _, c := range m.categories {
+						if term == "" || strings.Contains(strings.ToLower(c.Title), term) {
+							m.filteredList = append(m.filteredList, c.Title)
+							m.filteredIDs = append(m.filteredIDs, c.ID)
+						}
+					}
+				} else {
+					for _, f := range m.feeds {
+						if term == "" || strings.Contains(strings.ToLower(f.Title), term) {
+							m.filteredList = append(m.filteredList, f.Title)
+							m.filteredIDs = append(m.filteredIDs, f.ID)
+						}
+					}
+				}
+				if m.searchCursor >= len(m.filteredList) {
+					m.searchCursor = 0
+				}
+			}
 			return m, cmd
 		} else if m.state == StateLogin {
 			switch msg.String() {
@@ -436,12 +556,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 					// Try to connect and switch state
 					if minifluxURL != "" && minifluxToken != "" {
-						m.minifluxClient = miniflux.NewClient(minifluxURL, minifluxToken)
+						m.minifluxClient = miniflux.NewClientWithOptions(
+							minifluxURL,
+							miniflux.WithAPIKey(minifluxToken),
+							miniflux.WithHTTPClient(&http.Client{Timeout: 60 * time.Second}),
+						)
 						m.state = StateBrowsing
 						m.loading = true
 						m.urlInput.Blur()
 						m.searchInput.Blur()
-						return m, fetchEntries(m.minifluxClient, "", 0)
+						return m, fetchEntries(m.minifluxClient, "", 0, 0, 0)
 					} else {
 						m.err = fmt.Errorf("miniflux URL and Token are required")
 						m.urlInput.Focus() // Go back to URL input
@@ -556,6 +680,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if m.currentEntry != nil && m.currentEntry.ID == msg.id {
 				m.currentEntry.Starred = !m.currentEntry.Starred
+			}
+		}
+
+	case categoriesMsg:
+		m.categories = miniflux.Categories(msg)
+		if m.state == StateSearching && m.searchMode == SearchCategory {
+			m.filteredList = nil
+			m.filteredIDs = nil
+			term := strings.ToLower(m.searchInput.Value())
+			for _, c := range m.categories {
+				if term == "" || strings.Contains(strings.ToLower(c.Title), term) {
+					m.filteredList = append(m.filteredList, c.Title)
+					m.filteredIDs = append(m.filteredIDs, c.ID)
+				}
+			}
+		}
+
+	case feedsMsg:
+		m.feeds = miniflux.Feeds(msg)
+		if m.state == StateSearching && m.searchMode == SearchFeed {
+			m.filteredList = nil
+			m.filteredIDs = nil
+			term := strings.ToLower(m.searchInput.Value())
+			for _, f := range m.feeds {
+				if term == "" || strings.Contains(strings.ToLower(f.Title), term) {
+					m.filteredList = append(m.filteredList, f.Title)
+					m.filteredIDs = append(m.filteredIDs, f.ID)
+				}
 			}
 		}
 	}
@@ -700,12 +852,46 @@ func (m model) viewBrowsing() string {
 func (m model) viewSearching() string {
 	var sb strings.Builder
 
-	header := lipgloss.NewStyle().Bold(true).Render("Search Articles")
+	modeStr := searchModes[m.searchMode]
+	header := lipgloss.NewStyle().Bold(true).Render(fmt.Sprintf("Search Articles (%s)", modeStr))
 	sb.WriteString(header + "\n\n")
 
 	sb.WriteString(m.searchInput.View())
+	sb.WriteString("\n")
 
-	sb.WriteString("\n\n(Enter to search, Esc to cancel)")
+	// Render list if applicable
+	if m.searchMode == SearchCategory || m.searchMode == SearchFeed {
+		sb.WriteString("\n")
+		// Calculate available height
+		headerHeight := 6 // Header + Input + Spacing
+		availableHeight := m.height - headerHeight
+		if availableHeight < 5 {
+			availableHeight = 5
+		}
+
+		start := 0
+		end := len(m.filteredList)
+
+		// Simple scrolling logic for search view
+		if m.searchCursor >= availableHeight {
+			start = m.searchCursor - availableHeight + 1
+		}
+		if end > start+availableHeight {
+			end = start + availableHeight
+		}
+
+		for i := start; i < end; i++ {
+			cursor := " "
+			style := normalStyle
+			if i == m.searchCursor {
+				cursor = ">"
+				style = listSelectedStyle
+			}
+			sb.WriteString(fmt.Sprintf("%s %s\n", cursor, style.Render(m.filteredList[i])))
+		}
+	}
+
+	sb.WriteString("\n(Enter to search/select, Tab to change mode, Esc to cancel)")
 
 	return appStyle.Width(m.width).Height(m.height).Render(sb.String())
 }
@@ -947,17 +1133,43 @@ func (m model) viewReading() string {
 }
 
 // Commands
-func fetchEntries(client *miniflux.Client, search string, offset int) tea.Cmd {
+func fetchEntries(client *miniflux.Client, search string, categoryID int64, feedID int64, offset int) tea.Cmd {
 	return func() tea.Msg {
 		filter := &miniflux.Filter{Status: "unread", Limit: 50, Order: "published_at", Direction: "desc", Offset: offset}
 		if search != "" {
 			filter.Search = search
+		}
+		if categoryID != 0 {
+			filter.CategoryID = categoryID
+		}
+		if feedID != 0 {
+			filter.FeedID = feedID
 		}
 		entries, err := client.Entries(filter)
 		if err != nil {
 			return errMsg(err)
 		}
 		return entriesMsg{result: entries, offset: offset}
+	}
+}
+
+func fetchCategories(client *miniflux.Client) tea.Cmd {
+	return func() tea.Msg {
+		categories, err := client.Categories()
+		if err != nil {
+			return errMsg(err)
+		}
+		return categoriesMsg(categories)
+	}
+}
+
+func fetchFeeds(client *miniflux.Client) tea.Cmd {
+	return func() tea.Msg {
+		feeds, err := client.Feeds()
+		if err != nil {
+			return errMsg(err)
+		}
+		return feedsMsg(feeds)
 	}
 }
 
@@ -1162,7 +1374,11 @@ func main() {
 		}
 
 		if minifluxURL != "" && minifluxToken != "" {
-			client = miniflux.NewClient(minifluxURL, minifluxToken)
+			client = miniflux.NewClientWithOptions(
+				minifluxURL,
+				miniflux.WithAPIKey(minifluxToken),
+				miniflux.WithHTTPClient(&http.Client{Timeout: 60 * time.Second}),
+			)
 		}
 	}
 
