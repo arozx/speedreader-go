@@ -116,7 +116,6 @@ type model struct {
 	searchCursor int
 
 	// Statistics
-	// Statistics
 	sessionArticles int
 	sessionWords    int
 
@@ -127,6 +126,13 @@ type model struct {
 
 	// Configuration
 	cfg Config
+}
+
+func (m model) currentSearchTerm() string {
+	if m.filterYouTube {
+		return "youtube.com/watch?v=|youtu.be/"
+	}
+	return m.searchInput.Value()
 }
 
 type tickMsg time.Time
@@ -160,7 +166,7 @@ func initialModel(fileContent string, client *miniflux.Client, initialCfg Config
 	urlTi.Width = 50
 
 	m := model{
-		wpm:            initialCfg.WPM, // Use WPM from config
+		wpm:            initialCfg.WPM,
 		paused:         true,
 		rampSpeed:      initialCfg.RampSpeed,
 		zenMode:        initialCfg.ZenMode,
@@ -215,11 +221,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "ctrl+c", "q":
 				return m, tea.Quit
-			case "?":
+
+			case "?": // help menu
 				m.paused = true // Pause if reading
 				m.previousState = m.state
 				m.state = StateHelp
 				return m, nil
+
 			case "esc":
 				if m.state == StateHelp {
 					// Return to previous state
@@ -241,8 +249,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				currentTheme = (currentTheme + 1) % len(themes)
 				updateTheme(themes[currentTheme])
 
-			case "o":
-				// Open in browser
+			case "o": // Open in browser
 				var url string
 				var entryID int64
 
@@ -264,8 +271,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 
-			case "f":
-				// Toggle Starred
+			case "f": // Toggle Starred
 				var entryID int64
 				if m.currentEntry != nil {
 					entryID = m.currentEntry.ID
@@ -280,7 +286,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// State Specific Handling
-		if m.state == StateReading {
+		switch m.state {
+		case StateReading:
 			switch msg.String() {
 			case " ":
 				m.paused = !m.paused
@@ -314,7 +321,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "G":
 				m.index = len(m.content) - 1
 			}
-		} else if m.state == StateBrowsing {
+		case StateBrowsing:
 			switch msg.String() {
 			case "/":
 				m.state = StateSearching
@@ -363,13 +370,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// If we are within 10 items of the end, and we haven't loaded all items, fetch more
 				if !m.fetchingMore && len(m.entries) < m.totalEntries && m.cursor >= len(m.entries)-10 {
 					m.fetchingMore = true
-					search := ""
-					if m.filterYouTube {
-						search = "youtube.com/watch?v=|youtu.be/"
-					} else if m.searchInput.Value() != "" {
-						search = m.searchInput.Value()
-					}
-					cmd = fetchEntries(m.minifluxClient, search, m.currentCategoryID, m.currentFeedID, len(m.entries))
+					cmd = fetchEntries(m.minifluxClient, m.currentSearchTerm(), m.currentCategoryID, m.currentFeedID, len(m.entries))
 				}
 
 				// Ensure cursor is visible with scrolloff
@@ -410,21 +411,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case "y":
 				m.filterYouTube = !m.filterYouTube
-				searchTerm := ""
-				if m.filterYouTube {
-					searchTerm = "youtube.com/watch?v=|youtu.be/" // More specific URL patterns
-				}
 				m.loading = true
-				return m, fetchEntries(m.minifluxClient, searchTerm, m.currentCategoryID, m.currentFeedID, 0)
+				return m, fetchEntries(m.minifluxClient, m.currentSearchTerm(), m.currentCategoryID, m.currentFeedID, 0)
 			case "m":
 				// Mark as read manually
 				if m.minifluxClient != nil && len(m.entries) > 0 {
 					entryID := m.entries[m.cursor].ID
 					return m, markAsRead(m.minifluxClient, entryID)
 				}
+			case "r":
+				if m.minifluxClient != nil {
+					m.loading = true
+					m.fetchingMore = false
+					return m, fetchEntries(m.minifluxClient, m.currentSearchTerm(), m.currentCategoryID, m.currentFeedID, 0)
+				}
 			}
-		} else if m.state == StateSearching {
+		case StateSearching:
 			switch msg.String() {
+			case "r":
+				if m.minifluxClient != nil {
+					m.state = StateBrowsing
+					m.loading = true
+					m.searchInput.Blur()
+					return m, fetchEntries(m.minifluxClient, m.currentSearchTerm(), m.currentCategoryID, m.currentFeedID, 0)
+				}
+				return m, nil
 			case "enter":
 				m.state = StateBrowsing
 				m.loading = true
@@ -532,7 +543,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, cmd
-		} else if m.state == StateLogin {
+		case StateLogin:
 			switch msg.String() {
 			case "enter":
 				if m.urlInput.Focused() {
@@ -720,15 +731,16 @@ func (m model) View() string {
 		return "Loading..."
 	}
 
-	if m.state == StateBrowsing {
+	switch m.state {
+	case StateBrowsing:
 		return m.viewBrowsing()
-	} else if m.state == StateSearching {
+	case StateSearching:
 		return m.viewSearching()
-	} else if m.state == StateYouTubeLink {
+	case StateYouTubeLink:
 		return m.viewYouTubeLink()
-	} else if m.state == StateLogin {
+	case StateLogin:
 		return m.viewLogin()
-	} else if m.state == StateHelp {
+	case StateHelp:
 		return m.viewHelp()
 	}
 	return m.viewReading()
@@ -845,7 +857,7 @@ func (m model) viewBrowsing() string {
 		sb.WriteString("No entries found.")
 	}
 
-	sb.WriteString("\n\n(/: Search, y: YouTube Filter, m: Mark Read)")
+	sb.WriteString("\n\n(/: Search, y: YouTube Filter, m: Mark Read, r: Refresh)")
 
 	return appStyle.Width(m.width).Height(m.height).Render(sb.String())
 }
@@ -891,7 +903,7 @@ func (m model) viewSearching() string {
 		}
 	}
 
-	sb.WriteString("\n(Enter to search/select, Tab to change mode, Esc to cancel)")
+	sb.WriteString("\n(Enter to search/select, Tab to change mode, r: Refresh, Esc to cancel)")
 
 	return appStyle.Width(m.width).Height(m.height).Render(sb.String())
 }
@@ -951,7 +963,7 @@ func (m model) viewHelp() string {
 		{"Left / Right", "Rewind / Fast Forward (10 words)"},
 		{"g / G", "Jump to Start / End"},
 		{"s", "Toggle Large Text Size"},
-		{"r", "Toggle Speed Ramping"},
+		{"r", "Reader: toggle ramping | Lists: refresh"},
 		{"z", "Toggle Zen Mode"},
 		{"c", "Cycle Themes"},
 		{"/", "Search Articles (Miniflux)"},
@@ -961,6 +973,7 @@ func (m model) viewHelp() string {
 		{"f", "Toggle Starred"},
 		{"m", "Mark as Read"},
 		{"y", "Filter YouTube Videos"},
+		{"r", "Refresh latest entries"},
 		{"Esc", "Back / Quit"},
 		{"?", "Show this Help"},
 		{"q", "Quit Application"},
