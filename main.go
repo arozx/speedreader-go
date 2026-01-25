@@ -1195,10 +1195,14 @@ func (m model) currentDelay() time.Duration {
 	// Complexity Ramping
 	if m.rampSpeed {
 		length := len(word)
-		if length > 12 {
-			baseDelay *= 1.5
-		} else if length > 8 {
-			baseDelay *= 1.2
+		if strings.Contains(word, "http") {
+			baseDelay *= 2.0
+		} else {
+			if length > 12 {
+				baseDelay *= 1.5
+			} else if length > 8 {
+				baseDelay *= 1.2
+			}
 		}
 	}
 
