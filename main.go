@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbletea"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/k3a/html2text"
 	"github.com/pkg/browser"
@@ -351,9 +351,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 					// Place cursor at bottom with scrollOff
 					m.listOffset = m.cursor - (visibleHeight - 1 - scrollOff)
-					if m.listOffset < 0 {
-						m.listOffset = 0
-					}
+					m.listOffset = max(m.listOffset, 0)
 				}
 			case "up", "k":
 				if m.cursor > 0 {
@@ -446,7 +444,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 				searchTerm := m.searchInput.Value()
 
-				if m.searchMode == SearchCategory {
+				switch m.searchMode {
+				case SearchCategory:
 					if len(m.filteredIDs) > 0 && m.searchCursor < len(m.filteredIDs) {
 						m.currentCategoryID = m.filteredIDs[m.searchCursor]
 						searchTerm = "" // Clear text search when selecting ID
@@ -456,7 +455,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.loading = false
 						return m, nil
 					}
-				} else if m.searchMode == SearchFeed {
+				case SearchFeed:
 					if len(m.filteredIDs) > 0 && m.searchCursor < len(m.filteredIDs) {
 						m.currentFeedID = m.filteredIDs[m.searchCursor]
 						searchTerm = ""
@@ -482,7 +481,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.filteredIDs = nil
 
 				var cmd tea.Cmd
-				if m.searchMode == SearchCategory {
+				switch m.searchMode {
+				case SearchCategory:
 					if len(m.categories) == 0 {
 						cmd = fetchCategories(m.minifluxClient)
 					} else {
@@ -491,7 +491,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.filteredIDs = append(m.filteredIDs, c.ID)
 						}
 					}
-				} else if m.searchMode == SearchFeed {
+				case SearchFeed:
 					if len(m.feeds) == 0 {
 						cmd = fetchFeeds(m.minifluxClient)
 					} else {
@@ -672,9 +672,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Adjust cursor if necessary
 			if m.cursor >= len(m.entries) {
 				m.cursor = len(m.entries) - 1
-				if m.cursor < 0 {
-					m.cursor = 0
-				}
+				m.cursor = max(m.cursor, 0)
 			}
 		}
 
@@ -759,9 +757,7 @@ func (m model) viewBrowsing() string {
 	// Calculate available height for the list
 	headerHeight := 3
 	visibleHeight := m.height - headerHeight
-	if visibleHeight < 0 {
-		visibleHeight = 0
-	}
+	visibleHeight = max(visibleHeight, 0)
 
 	if m.loading && len(m.entries) == 0 {
 		sb.WriteString("Loading...")
@@ -771,9 +767,7 @@ func (m model) viewBrowsing() string {
 		// Adjust listOffset if entries are fewer than visibleHeight
 		if len(m.entries) < m.listOffset+visibleHeight {
 			m.listOffset = len(m.entries) - visibleHeight
-			if m.listOffset < 0 {
-				m.listOffset = 0
-			}
+			m.listOffset = max(m.listOffset, 0)
 		}
 
 		// Render scroll indicator for top
@@ -813,17 +807,13 @@ func (m model) viewBrowsing() string {
 			// Fixed prefix width: Cursor(1) + Space(1) + Date(10) + Space(1) + Star(2) = 15
 			prefixWidth := 15
 			availableWidth := m.width - prefixWidth - 1 // -1 Buffer
-			if availableWidth < 10 {
-				availableWidth = 10
-			}
+			availableWidth = max(availableWidth, 10)
 
 			title := strings.ReplaceAll(strings.ReplaceAll(entry.Title, "\n", " "), "\r", "")
 			if lipgloss.Width(title) > availableWidth {
 				// Truncate
 				targetWidth := availableWidth - 1 // -1 for ellipsis
-				if targetWidth < 0 {
-					targetWidth = 0
-				}
+				targetWidth = max(targetWidth, 0)
 
 				var currentWidth int
 				var sbTrunc strings.Builder
@@ -877,9 +867,7 @@ func (m model) viewSearching() string {
 		// Calculate available height
 		headerHeight := 6 // Header + Input + Spacing
 		availableHeight := m.height - headerHeight
-		if availableHeight < 5 {
-			availableHeight = 5
-		}
+		availableHeight = max(availableHeight, 5)
 
 		start := 0
 		end := len(m.filteredList)
@@ -1030,17 +1018,13 @@ func (m model) viewReading() string {
 	// Left Padding
 	leftLen := lipgloss.Width(left) // Width of the characters
 	padLen := centerX - leftLen
-	if padLen < 0 {
-		padLen = 0
-	}
+	padLen = max(padLen, 0)
 	leftPadding := normalStyle.Render(strings.Repeat(" ", padLen))
 
 	// Right Padding
 	currentContentWidth := lipgloss.Width(leftPadding) + lipgloss.Width(leftStr) + lipgloss.Width(focusStr) + lipgloss.Width(rightStr)
 	rightPadLen := m.width - currentContentWidth
-	if rightPadLen < 0 {
-		rightPadLen = 0
-	}
+	rightPadLen = max(rightPadLen, 0)
 	rightPadding := normalStyle.Render(strings.Repeat(" ", rightPadLen))
 
 	contentLine := leftPadding + leftStr + focusStr + rightStr + rightPadding
@@ -1085,9 +1069,7 @@ func (m model) viewReading() string {
 	// 4. Vertical Layout Calculation
 	totalHeight := m.height
 	mainHeight := totalHeight - hudHeight
-	if mainHeight < 0 {
-		mainHeight = 0
-	}
+	mainHeight = max(mainHeight, 0)
 
 	showSeparators := m.height > 10
 	verticalGap := 1
@@ -1098,14 +1080,10 @@ func (m model) viewReading() string {
 	}
 
 	topPadding := (mainHeight - contentBlockHeight) / 2
-	if topPadding < 0 {
-		topPadding = 0
-	}
+	topPadding = max(topPadding, 0)
 
 	bottomPadding := mainHeight - contentBlockHeight - topPadding
-	if bottomPadding < 0 {
-		bottomPadding = 0
-	}
+	bottomPadding = max(bottomPadding, 0)
 
 	// 5. Build the View
 	var sb strings.Builder
@@ -1118,7 +1096,7 @@ func (m model) viewReading() string {
 	// Content Block
 	if showSeparators && !m.zenMode {
 		sb.WriteString(separator + "\n")
-		for i := 0; i < verticalGap; i++ {
+		for range verticalGap {
 			sb.WriteString(blankLine + "\n")
 		}
 	}
@@ -1126,7 +1104,7 @@ func (m model) viewReading() string {
 	sb.WriteString(contentLine + "\n")
 
 	if showSeparators && !m.zenMode {
-		for i := 0; i < verticalGap; i++ {
+		for range verticalGap {
 			sb.WriteString(blankLine + "\n")
 		}
 		sb.WriteString(separator + "\n")
