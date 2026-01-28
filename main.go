@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -26,6 +27,7 @@ const (
 	StateYouTubeLink
 	StateLogin
 	StateHelp
+	StateLinks
 )
 
 // Search Modes
@@ -126,6 +128,16 @@ type model struct {
 
 	// Configuration
 	cfg Config
+
+	// Article Links
+	articleLinks []ArticleLink
+	linksCursor  int
+}
+
+// ArticleLink represents a link found in an article
+type ArticleLink struct {
+	Text string
+	URL  string
 }
 
 func (m model) currentSearchTerm() string {
@@ -142,7 +154,10 @@ type entriesMsg struct {
 }
 type categoriesMsg miniflux.Categories
 type feedsMsg miniflux.Feeds
-type contentMsg string
+type contentMsg struct {
+	text  string
+	links []ArticleLink
+}
 type errMsg error
 type markReadMsg struct {
 	id  int64
@@ -320,6 +335,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.index = 0
 			case "G":
 				m.index = len(m.content) - 1
+			case "l":
+				// Show article links
+				if len(m.articleLinks) > 0 {
+					m.paused = true
+					m.previousState = m.state
+					m.state = StateLinks
+				}
 			}
 		case StateBrowsing:
 			switch msg.String() {
@@ -603,6 +625,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.searchInput, cmd = m.searchInput.Update(msg)
 			}
 			return m, cmd
+		case StateLinks:
+			switch msg.String() {
+			case "esc", "l":
+				// Return to reading state
+				m.state = StateReading
+				return m, nil
+			case "up", "k":
+				if m.linksCursor > 0 {
+					m.linksCursor--
+				}
+			case "down", "j":
+				if m.linksCursor < len(m.articleLinks)-1 {
+					m.linksCursor++
+				}
+			case "g":
+				m.linksCursor = 0
+			case "G":
+				if len(m.articleLinks) > 0 {
+					m.linksCursor = len(m.articleLinks) - 1
+				}
+			case "enter", "o":
+				// Open selected link in browser
+				if len(m.articleLinks) > 0 && m.linksCursor < len(m.articleLinks) {
+					_ = browser.OpenURL(m.articleLinks[m.linksCursor].URL)
+				}
+			}
+			return m, nil
 		}
 
 	case tea.WindowSizeMsg:
@@ -644,7 +693,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.fetchingMore = false
 
 	case contentMsg:
-		m.content = strings.Fields(string(msg))
+		m.content = strings.Fields(msg.text)
+		m.articleLinks = msg.links
+		m.linksCursor = 0
 		m.state = StateReading
 		m.index = 0
 		m.paused = true
@@ -740,6 +791,8 @@ func (m model) View() string {
 		return m.viewLogin()
 	case StateHelp:
 		return m.viewHelp()
+	case StateLinks:
+		return m.viewLinks()
 	}
 	return m.viewReading()
 }
@@ -953,6 +1006,7 @@ func (m model) viewHelp() string {
 		{"s", "Toggle Large Text Size"},
 		{"r", "Reader: toggle ramping | Lists: refresh"},
 		{"z", "Toggle Zen Mode"},
+		{"l", "Show Article Links"},
 		{"c", "Cycle Themes"},
 		{"/", "Search Articles (Miniflux)"},
 		{"j / k", "Navigate Article List"},
@@ -982,6 +1036,97 @@ func (m model) viewHelp() string {
 	}
 
 	sb.WriteString("\n" + lipgloss.NewStyle().Faint(true).Render("Press Esc to close."))
+
+	return appStyle.Width(m.width).Height(m.height).Render(sb.String())
+}
+
+func (m model) viewLinks() string {
+	var sb strings.Builder
+
+	// Header
+	title := "Article Links"
+	if m.currentEntry != nil {
+		title = fmt.Sprintf("Links in: %s", m.currentEntry.Title)
+		// Truncate title if too long
+		if len(title) > m.width-4 {
+			title = title[:m.width-7] + "..."
+		}
+	}
+	sb.WriteString(lipgloss.NewStyle().Bold(true).Render(title) + "\n\n")
+
+	if len(m.articleLinks) == 0 {
+		sb.WriteString("No links found in this article.\n")
+		sb.WriteString("\n" + lipgloss.NewStyle().Faint(true).Render("Press Esc or l to return to reading."))
+		return appStyle.Width(m.width).Height(m.height).Render(sb.String())
+	}
+
+	// Calculate available height for the list
+	headerHeight := 4 // Header + blank line + footer
+	footerHeight := 2
+	visibleHeight := m.height - headerHeight - footerHeight
+	visibleHeight = max(visibleHeight, 5)
+
+	// Calculate scroll offset
+	listOffset := 0
+	if m.linksCursor >= visibleHeight {
+		listOffset = m.linksCursor - visibleHeight + 1
+	}
+
+	// Render scroll indicator for top
+	if listOffset > 0 {
+		sb.WriteString(normalStyle.Render("  ▲ (more above)") + "\n")
+		visibleHeight--
+	}
+
+	// Render visible links
+	for i := listOffset; i < listOffset+visibleHeight && i < len(m.articleLinks); i++ {
+		link := m.articleLinks[i]
+		cursor := " "
+		style := normalStyle
+		if m.linksCursor == i {
+			cursor = ">"
+			style = listSelectedStyle
+		}
+
+		// Format link text and URL
+		linkText := link.Text
+		linkURL := link.URL
+
+		// Calculate available width
+		prefixWidth := 4 // cursor + space + number + space
+		numStr := fmt.Sprintf("%d.", i+1)
+		prefixWidth = len(numStr) + 3
+
+		availableWidth := m.width - prefixWidth - 1
+		availableWidth = max(availableWidth, 20)
+
+		// Truncate text if needed
+		if len(linkText) > availableWidth/2 {
+			linkText = linkText[:availableWidth/2-3] + "..."
+		}
+
+		// Format: [num] text
+		//         URL (dimmed)
+		numRendered := lineStyle.Render(numStr)
+		sb.WriteString(fmt.Sprintf("%s %s %s\n", cursor, numRendered, style.Render(linkText)))
+
+		// Show URL on next line, indented and dimmed
+		urlIndent := strings.Repeat(" ", len(numStr)+3)
+		urlStyle := lipgloss.NewStyle().Faint(true)
+		if len(linkURL) > availableWidth {
+			linkURL = linkURL[:availableWidth-3] + "..."
+		}
+		sb.WriteString(urlIndent + urlStyle.Render(linkURL) + "\n")
+	}
+
+	// Render scroll indicator for bottom
+	if listOffset+visibleHeight < len(m.articleLinks) {
+		sb.WriteString(normalStyle.Render("  ▼ (more below)") + "\n")
+	}
+
+	// Footer
+	sb.WriteString("\n" + lipgloss.NewStyle().Faint(true).Render(
+		fmt.Sprintf("(%d links) j/k: Navigate | Enter/o: Open | Esc/l: Back", len(m.articleLinks))))
 
 	return appStyle.Width(m.width).Height(m.height).Render(sb.String())
 }
@@ -1167,8 +1312,46 @@ func fetchFeeds(client *miniflux.Client) tea.Cmd {
 func fetchContent(htmlContent string) tea.Cmd {
 	return func() tea.Msg {
 		text := html2text.HTML2Text(htmlContent)
-		return contentMsg(text)
+		links := extractLinks(htmlContent)
+		return contentMsg{text: text, links: links}
 	}
+}
+
+// extractLinks extracts all links from HTML content
+func extractLinks(htmlContent string) []ArticleLink {
+	var links []ArticleLink
+	seen := make(map[string]bool)
+
+	// Match <a href="...">text</a> patterns
+	linkRegex := regexp.MustCompile(`<a[^>]*href=["']([^"']+)["'][^>]*>([^<]*)</a>`)
+	matches := linkRegex.FindAllStringSubmatch(htmlContent, -1)
+
+	for _, match := range matches {
+		if len(match) >= 3 {
+			url := match[1]
+			text := strings.TrimSpace(match[2])
+
+			// Skip empty URLs, anchors, and javascript links
+			if url == "" || strings.HasPrefix(url, "#") || strings.HasPrefix(url, "javascript:") {
+				continue
+			}
+
+			// Skip duplicates
+			if seen[url] {
+				continue
+			}
+			seen[url] = true
+
+			// Use URL as text if text is empty
+			if text == "" {
+				text = url
+			}
+
+			links = append(links, ArticleLink{Text: text, URL: url})
+		}
+	}
+
+	return links
 }
 
 func markAsRead(client *miniflux.Client, entryID int64) tea.Cmd {
