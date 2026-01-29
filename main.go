@@ -131,14 +131,16 @@ type model struct {
 	cfg Config
 
 	// Article Links
-	articleLinks []ArticleLink
-	linksCursor  int
+	articleLinks    []ArticleLink
+	linksCursor     int
+	linksListOffset int
 }
 
 // ArticleLink represents a link found in an article
 type ArticleLink struct {
-	Text string
-	URL  string
+	Text      string
+	URL       string
+	WordIndex int // Position of link in the word stream (for cursor positioning)
 }
 
 func (m model) currentSearchTerm() string {
@@ -245,10 +247,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 
 			case "esc":
-				if m.state == StateHelp {
+				switch m.state {
+				case StateHelp, StateLinks:
 					// Return to previous state
 					m.state = m.previousState
-					return m, nil
+					eturn m, nil
 				}
 				if m.state == StateReading && m.minifluxClient != nil {
 					m.state = StateBrowsing
@@ -341,6 +344,44 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if len(m.articleLinks) > 0 {
 					m.paused = true
 					m.previousState = m.state
+
+					// Find the most recent link that appeared before the current reading position
+					// m.index is the current word position in the speed reader
+					m.linksCursor = 0
+					for i, link := range m.articleLinks {
+						if link.WordIndex <= m.index {
+							m.linksCursor = i
+						} else {
+							break
+						}
+					}
+
+					// Calculate linksListOffset to position cursor visible with items above
+					headerHeight := 4
+					footerHeight := 2
+					availableLines := m.height - headerHeight - footerHeight
+					availableLines -= 2 // Reserve for scroll indicators
+
+					visibleItems := availableLines / 2
+					visibleItems = max(visibleItems, 3)
+
+					scrollOff := 2
+					if visibleItems < scrollOff+1 {
+						scrollOff = visibleItems - 1
+					}
+
+					// Position so cursor has scrollOff items above it
+					if m.linksCursor > scrollOff {
+						m.linksListOffset = m.linksCursor - scrollOff
+					} else {
+						m.linksListOffset = 0
+					}
+
+					// Make sure we don't scroll past the end
+					maxOffset := len(m.articleLinks) - visibleItems
+					maxOffset = max(maxOffset, 0)
+					m.linksListOffset = min(m.linksListOffset, maxOffset)
+
 					m.state = StateLinks
 				}
 			}
@@ -671,22 +712,71 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case StateLinks:
 			switch msg.String() {
 			case "esc", "l":
-				// Return to reading state
-				m.state = StateReading
+				// Return to previous state
+				m.state = m.previousState
 				return m, nil
 			case "up", "k":
 				if m.linksCursor > 0 {
 					m.linksCursor--
 				}
+				// Ensure cursor stays visible - scroll up if cursor goes above visible area
+				if m.linksCursor < m.linksListOffset {
+					m.linksListOffset = m.linksCursor
+				}
 			case "down", "j":
 				if m.linksCursor < len(m.articleLinks)-1 {
 					m.linksCursor++
 				}
+				// Calculate number of visible items (each link = 2 lines: title + URL)
+				headerHeight := 4
+				footerHeight := 2
+				availableLines := m.height - headerHeight - footerHeight
+				// Reserve lines for scroll indicators
+				if m.linksListOffset > 0 {
+					availableLines--
+				}
+				availableLines-- // Reserve for bottom indicator
+
+				visibleItems := availableLines / 2
+				visibleItems = max(visibleItems, 3)
+
+				scrollOff := 2
+				if visibleItems < scrollOff+1 {
+					scrollOff = visibleItems - 1
+				}
+
+				// Ensure buffer below cursor
+				if m.linksCursor > m.linksListOffset+visibleItems-1-scrollOff {
+					m.linksListOffset = m.linksCursor - (visibleItems - 1 - scrollOff)
+				}
 			case "g":
 				m.linksCursor = 0
+				m.linksListOffset = 0
 			case "G":
 				if len(m.articleLinks) > 0 {
 					m.linksCursor = len(m.articleLinks) - 1
+
+					// Calculate number of visible items
+					headerHeight := 4
+					footerHeight := 2
+					availableLines := m.height - headerHeight - footerHeight
+					// Top indicator will likely be needed
+					if m.linksCursor > 0 {
+						availableLines--
+					}
+					availableLines-- // Reserve for bottom indicator
+
+					visibleItems := availableLines / 2
+					visibleItems = max(visibleItems, 3)
+
+					scrollOff := 2
+					if visibleItems < scrollOff+1 {
+						scrollOff = visibleItems - 1
+					}
+
+					// Place cursor at bottom with scrollOff
+					m.linksListOffset = m.linksCursor - (visibleItems - 1 - scrollOff)
+					m.linksListOffset = max(m.linksListOffset, 0)
 				}
 			case "enter", "o":
 				// Open selected link in browser
@@ -1167,26 +1257,32 @@ func (m model) viewLinks() string {
 		return appStyle.Width(m.width).Height(m.height).Render(sb.String())
 	}
 
-	// Calculate available height for the list
+	// Calculate available lines and number of visible items (each link = 2 lines)
 	headerHeight := 4 // Header + blank line + footer
 	footerHeight := 2
-	visibleHeight := m.height - headerHeight - footerHeight
-	visibleHeight = max(visibleHeight, 5)
+	availableLines := m.height - headerHeight - footerHeight
 
-	// Calculate scroll offset
-	listOffset := 0
-	if m.linksCursor >= visibleHeight {
-		listOffset = m.linksCursor - visibleHeight + 1
-	}
+	listOffset := m.linksListOffset
 
 	// Render scroll indicator for top
 	if listOffset > 0 {
 		sb.WriteString(normalStyle.Render("  ▲ (more above)") + "\n")
-		visibleHeight--
+		availableLines--
+	}
+
+	// Check if we need bottom indicator
+	visibleItems := availableLines / 2
+	visibleItems = max(visibleItems, 1)
+
+	needsBottomIndicator := listOffset+visibleItems < len(m.articleLinks)
+	if needsBottomIndicator {
+		availableLines--
+		visibleItems = availableLines / 2
+		visibleItems = max(visibleItems, 1)
 	}
 
 	// Render visible links
-	for i := listOffset; i < listOffset+visibleHeight && i < len(m.articleLinks); i++ {
+	for i := listOffset; i < listOffset+visibleItems && i < len(m.articleLinks); i++ {
 		link := m.articleLinks[i]
 		cursor := " "
 		style := normalStyle
@@ -1226,7 +1322,7 @@ func (m model) viewLinks() string {
 	}
 
 	// Render scroll indicator for bottom
-	if listOffset+visibleHeight < len(m.articleLinks) {
+	if needsBottomIndicator {
 		sb.WriteString(normalStyle.Render("  ▼ (more below)") + "\n")
 	}
 
@@ -1418,19 +1514,25 @@ func fetchFeeds(client *miniflux.Client) tea.Cmd {
 func fetchContent(htmlContent string) tea.Cmd {
 	return func() tea.Msg {
 		text := html2text.HTML2Text(htmlContent)
-		links := extractLinks(htmlContent)
+		links := extractLinks(htmlContent, text)
 		return contentMsg{text: text, links: links}
 	}
 }
 
-// extractLinks extracts all links from HTML content
-func extractLinks(htmlContent string) []ArticleLink {
+// extractLinks extracts all links from HTML content and tracks their word positions in the converted text
+func extractLinks(htmlContent string, convertedText string) []ArticleLink {
 	var links []ArticleLink
 	seen := make(map[string]bool)
+
+	// Convert text to words for position tracking
+	words := strings.Fields(convertedText)
 
 	// Match <a href="...">text</a> patterns
 	linkRegex := regexp.MustCompile(`<a[^>]*href=["']([^"']+)["'][^>]*>([^<]*)</a>`)
 	matches := linkRegex.FindAllStringSubmatch(htmlContent, -1)
+
+	// Track position in words as we find links
+	searchStartWord := 0
 
 	for _, match := range matches {
 		if len(match) >= 3 {
@@ -1453,7 +1555,29 @@ func extractLinks(htmlContent string) []ArticleLink {
 				text = url
 			}
 
-			links = append(links, ArticleLink{Text: text, URL: url})
+			// Find word position by searching for the first word of the link text
+			wordIndex := -1
+			linkWords := strings.Fields(text)
+			if len(linkWords) > 0 {
+				firstWord := strings.ToLower(linkWords[0])
+				// Search from where we left off to maintain order
+				for i := searchStartWord; i < len(words); i++ {
+					// Check if this word matches (case-insensitive, strip punctuation)
+					w := strings.ToLower(strings.Trim(words[i], ".,!?;:\"'()[]{}"))
+					if w == firstWord || strings.HasPrefix(w, firstWord) || strings.HasPrefix(firstWord, w) {
+						wordIndex = i
+						searchStartWord = i + 1
+						break
+					}
+				}
+			}
+
+			// If we couldn't find it, estimate based on order
+			if wordIndex == -1 {
+				wordIndex = searchStartWord
+			}
+
+			links = append(links, ArticleLink{Text: text, URL: url, WordIndex: wordIndex})
 		}
 	}
 
