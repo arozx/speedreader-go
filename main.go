@@ -110,12 +110,13 @@ type model struct {
 	urlInput       textinput.Model // For Miniflux URL input
 
 	// Search
-	searchMode   int
-	categories   miniflux.Categories
-	feeds        miniflux.Feeds
-	filteredList []string
-	filteredIDs  []int64
-	searchCursor int
+	searchMode      int
+	categories      miniflux.Categories
+	feeds           miniflux.Feeds
+	filteredList    []string
+	filteredIDs     []int64
+	searchCursor    int
+	filteredEntries []*miniflux.Entry // For showing article previews in search
 
 	// Statistics
 	sessionArticles int
@@ -349,6 +350,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.state = StateSearching
 				m.searchInput.Focus()
 				m.searchInput.SetValue("")
+				m.searchCursor = 0
+				// Initialize filtered entries with all current entries for General search
+				m.filteredEntries = m.entries
 				return m, textinput.Blink
 			case "g":
 				m.cursor = 0
@@ -501,6 +505,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.searchCursor = 0
 				m.filteredList = nil
 				m.filteredIDs = nil
+				m.filteredEntries = nil
 
 				var cmd tea.Cmd
 				switch m.searchMode {
@@ -522,18 +527,43 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.filteredIDs = append(m.filteredIDs, f.ID)
 						}
 					}
+				case SearchGeneral:
+					// Filter entries from loaded entries
+					m.filteredEntries = m.entries
 				}
 				return m, cmd
 
 			case "up":
-				if m.searchCursor > 0 {
-					m.searchCursor--
+				if m.searchMode == SearchGeneral {
+					if m.searchCursor > 0 {
+						m.searchCursor--
+					}
+				} else {
+					if m.searchCursor > 0 {
+						m.searchCursor--
+					}
 				}
 				return m, nil
 
 			case "down":
-				if len(m.filteredList) > 0 && m.searchCursor < len(m.filteredList)-1 {
-					m.searchCursor++
+				if m.searchMode == SearchGeneral {
+					if len(m.filteredEntries) > 0 && m.searchCursor < len(m.filteredEntries)-1 {
+						m.searchCursor++
+					}
+				} else {
+					if len(m.filteredList) > 0 && m.searchCursor < len(m.filteredList)-1 {
+						m.searchCursor++
+					}
+				}
+				return m, nil
+
+			case "f":
+				// Toggle starred for selected entry in General search mode
+				if m.searchMode == SearchGeneral && len(m.filteredEntries) > 0 && m.searchCursor < len(m.filteredEntries) {
+					entryID := m.filteredEntries[m.searchCursor].ID
+					if entryID != 0 && m.minifluxClient != nil {
+						return m, toggleStarred(m.minifluxClient, entryID)
+					}
 				}
 				return m, nil
 			}
@@ -541,7 +571,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.searchInput, cmd = m.searchInput.Update(msg)
 
 			// Post-update filtering
-			if m.searchMode == SearchCategory || m.searchMode == SearchFeed {
+			switch m.searchMode {
+			case SearchCategory, SearchFeed:
 				term := strings.ToLower(m.searchInput.Value())
 				m.filteredList = nil
 				m.filteredIDs = nil
@@ -561,6 +592,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 				if m.searchCursor >= len(m.filteredList) {
+					m.searchCursor = 0
+				}
+			case SearchGeneral:
+				// Filter entries based on search term
+				term := strings.ToLower(m.searchInput.Value())
+				m.filteredEntries = nil
+				for _, e := range m.entries {
+					if term == "" || strings.Contains(strings.ToLower(e.Title), term) {
+						m.filteredEntries = append(m.filteredEntries, e)
+					}
+				}
+				if m.searchCursor >= len(m.filteredEntries) {
 					m.searchCursor = 0
 				}
 			}
@@ -914,8 +957,72 @@ func (m model) viewSearching() string {
 	sb.WriteString(m.searchInput.View())
 	sb.WriteString("\n")
 
-	// Render list if applicable
-	if m.searchMode == SearchCategory || m.searchMode == SearchFeed {
+	// Render list based on search mode
+	if m.searchMode == SearchGeneral {
+		// Show filtered entries with stars
+		sb.WriteString("\n")
+		headerHeight := 6
+		availableHeight := m.height - headerHeight
+		availableHeight = max(availableHeight, 5)
+
+		if len(m.filteredEntries) == 0 {
+			if m.searchInput.Value() != "" {
+				sb.WriteString(normalStyle.Render("No matching articles found.") + "\n")
+			} else {
+				sb.WriteString(normalStyle.Render("Type to search articles...") + "\n")
+			}
+		} else {
+			start := 0
+			end := len(m.filteredEntries)
+
+			if m.searchCursor >= availableHeight {
+				start = m.searchCursor - availableHeight + 1
+			}
+			if end > start+availableHeight {
+				end = start + availableHeight
+			}
+
+			for i := start; i < end; i++ {
+				entry := m.filteredEntries[i]
+				cursor := " "
+				style := normalStyle
+				if i == m.searchCursor {
+					cursor = ">"
+					style = listSelectedStyle
+				}
+
+				// Star indicator
+				starStr := "  "
+				if entry.Starred {
+					starStr = "★ "
+				}
+				starRendered := lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render(starStr)
+
+				// Truncate title if needed
+				title := strings.ReplaceAll(strings.ReplaceAll(entry.Title, "\n", " "), "\r", "")
+				prefixWidth := 5 // cursor + space + star
+				availableWidth := m.width - prefixWidth - 1
+				availableWidth = max(availableWidth, 10)
+				if lipgloss.Width(title) > availableWidth {
+					targetWidth := availableWidth - 1
+					targetWidth = max(targetWidth, 0)
+					var currentWidth int
+					var sbTrunc strings.Builder
+					for _, r := range title {
+						w := lipgloss.Width(string(r))
+						if currentWidth+w > targetWidth {
+							break
+						}
+						sbTrunc.WriteRune(r)
+						currentWidth += w
+					}
+					title = sbTrunc.String() + "…"
+				}
+
+				sb.WriteString(fmt.Sprintf("%s %s%s\n", cursor, starRendered, style.Render(title)))
+			}
+		}
+	} else if m.searchMode == SearchCategory || m.searchMode == SearchFeed {
 		sb.WriteString("\n")
 		// Calculate available height
 		headerHeight := 6 // Header + Input + Spacing
@@ -944,7 +1051,7 @@ func (m model) viewSearching() string {
 		}
 	}
 
-	sb.WriteString("\n(Enter to search/select, Tab to change mode, r: Refresh, Esc to cancel)")
+	sb.WriteString("\n(Enter to search/select, Tab to change mode, f: Star, r: Refresh, Esc to cancel)")
 
 	return appStyle.Width(m.width).Height(m.height).Render(sb.String())
 }
@@ -1012,7 +1119,7 @@ func (m model) viewHelp() string {
 		{"j / k", "Navigate Article List"},
 		{"Enter", "Select Article"},
 		{"o", "Open Article in Browser"},
-		{"f", "Toggle Starred"},
+		{"f", "Toggle Starred (Browse & Search)"},
 		{"m", "Mark as Read"},
 		{"y", "Filter YouTube Videos"},
 		{"r", "Refresh latest entries"},
@@ -1093,9 +1200,8 @@ func (m model) viewLinks() string {
 		linkURL := link.URL
 
 		// Calculate available width
-		prefixWidth := 4 // cursor + space + number + space
 		numStr := fmt.Sprintf("%d.", i+1)
-		prefixWidth = len(numStr) + 3
+		prefixWidth := len(numStr) + 3
 
 		availableWidth := m.width - prefixWidth - 1
 		availableWidth = max(availableWidth, 20)
@@ -1491,6 +1597,10 @@ func loadConfig() Config {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return Config{WPM: 300, ThemeIndex: 0, TotalArticles: 0, TotalWords: 0, MinifluxURL: ""}
 	}
+
+	// make sure wpm doesnt go negative
+	cfg.WPM = min(cfg.WPM, 300)
+
 	return cfg
 }
 
@@ -1526,11 +1636,6 @@ func main() {
 	}
 
 	updateTheme(themes[currentTheme]) // Apply initial theme
-
-	initialWPM := cfg.WPM
-	if initialWPM <= 0 {
-		initialWPM = 300
-	}
 
 	// 2. Try to get Miniflux credentials
 	if fileContent == "" { // Only try Miniflux if no local file is given
