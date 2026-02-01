@@ -1723,7 +1723,7 @@ func loadConfig() Config {
 	}
 
 	// make sure wpm doesnt go negative
-	cfg.WPM = min(cfg.WPM, 300)
+	cfg.WPM = max(cfg.WPM, 300)
 
 	return cfg
 }
