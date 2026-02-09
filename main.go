@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -82,6 +83,17 @@ var (
 		lipgloss.Color("#ffffff"), // White
 	}
 )
+
+// cleanTitle removes non-printable characters from a title and replaces newlines/carriage returns with spaces
+func cleanTitle(title string) string {
+	var sb strings.Builder
+	for _, r := range title {
+		if unicode.IsPrint(r) {
+			sb.WriteRune(r)
+		}
+	}
+	return strings.ReplaceAll(strings.ReplaceAll(sb.String(), "\n", " "), "\r", " ")
+}
 
 type model struct {
 	state         int
@@ -251,7 +263,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case StateHelp, StateLinks:
 					// Return to previous state
 					m.state = m.previousState
-					eturn m, nil
+					return m, nil
 				}
 				if m.state == StateReading && m.minifluxClient != nil {
 					m.state = StateBrowsing
@@ -995,7 +1007,7 @@ func (m model) viewBrowsing() string {
 			availableWidth := m.width - prefixWidth - 1 // -1 Buffer
 			availableWidth = max(availableWidth, 10)
 
-			title := strings.ReplaceAll(strings.ReplaceAll(entry.Title, "\n", " "), "\r", "")
+			title := cleanTitle(entry.Title)
 			if lipgloss.Width(title) > availableWidth {
 				// Truncate
 				targetWidth := availableWidth - 1 // -1 for ellipsis
@@ -1089,7 +1101,7 @@ func (m model) viewSearching() string {
 				starRendered := lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render(starStr)
 
 				// Truncate title if needed
-				title := strings.ReplaceAll(strings.ReplaceAll(entry.Title, "\n", " "), "\r", "")
+				title := cleanTitle(entry.Title)
 				prefixWidth := 5 // cursor + space + star
 				availableWidth := m.width - prefixWidth - 1
 				availableWidth = max(availableWidth, 10)
@@ -1342,6 +1354,10 @@ func (m model) viewReading() string {
 		m.index = len(m.content) - 1
 	}
 
+	if len(m.content) == 0 {
+		return "No readable content available."
+	}
+
 	// Helper for full-width background lines
 	blankLine := normalStyle.Render(strings.Repeat(" ", m.width))
 
@@ -1514,6 +1530,9 @@ func fetchFeeds(client *miniflux.Client) tea.Cmd {
 func fetchContent(htmlContent string) tea.Cmd {
 	return func() tea.Msg {
 		text := html2text.HTML2Text(htmlContent)
+		if text == "" {
+			text = "Content could not be extracted from this article."
+		}
 		links := extractLinks(htmlContent, text)
 		return contentMsg{text: text, links: links}
 	}
