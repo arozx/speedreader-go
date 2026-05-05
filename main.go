@@ -1520,18 +1520,68 @@ func fetchCategories(client *miniflux.Client) tea.Cmd {
 	}
 }
 
+type FeedCache struct {
+	LastSync time.Time      `json:"last_sync"`
+	Feeds    miniflux.Feeds `json:"feeds"`
+}
+
+func getFeedCachePath() string {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "speedreader_feeds.json"
+	}
+	return filepath.Join(configDir, "speedreader_feeds.json")
+}
+
+func loadFeedCache() (miniflux.Feeds, bool) {
+	data, err := os.ReadFile(getFeedCachePath())
+	if err != nil {
+		return nil, false
+	}
+	var cache FeedCache
+	if err := json.Unmarshal(data, &cache); err != nil {
+		return nil, false
+	}
+
+	// Invalidate at 9 AM everyday
+	now := time.Now()
+	last9AM := time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, now.Location())
+	if now.Before(last9AM) {
+		last9AM = last9AM.AddDate(0, 0, -1)
+	}
+
+	if cache.LastSync.Before(last9AM) {
+		return nil, false // Cache expired
+	}
+	return cache.Feeds, true
+}
+
+func saveFeedCache(feeds miniflux.Feeds) {
+	cache := FeedCache{
+		LastSync: time.Now(),
+		Feeds:    feeds,
+	}
+	data, _ := json.Marshal(cache)
+	os.WriteFile(getFeedCachePath(), data, 0644)
+}
+
 func fetchFeeds(client *miniflux.Client) tea.Cmd {
 	return func() tea.Msg {
 		feeds, err := client.Feeds()
 		if err != nil {
 			return errMsg(err)
 		}
+		saveFeedCache(feeds) // Cache explicit fetches too
 		return feedsMsg(feeds)
 	}
 }
 
 func refreshErroredFeedsOnStart(client *miniflux.Client) tea.Cmd {
 	return func() tea.Msg {
+		if cachedFeeds, valid := loadFeedCache(); valid {
+			return feedsMsg(cachedFeeds)
+		}
+
 		feeds, err := client.Feeds()
 		if err != nil {
 			return nil
@@ -1543,6 +1593,7 @@ func refreshErroredFeedsOnStart(client *miniflux.Client) tea.Cmd {
 			}
 		}
 
+		saveFeedCache(feeds)
 		return feedsMsg(feeds)
 	}
 }
