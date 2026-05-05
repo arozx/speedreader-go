@@ -236,7 +236,10 @@ func saveMinifluxToken(token string) error {
 
 func (m model) Init() tea.Cmd {
 	if m.state == StateBrowsing && m.minifluxClient != nil {
-		return fetchEntries(m.minifluxClient, "", 0, 0, 0)
+		return tea.Batch(
+			fetchEntries(m.minifluxClient, "", 0, 0, 0),
+			refreshErroredFeedsOnStart(m.minifluxClient),
+		)
 	}
 	return nil
 }
@@ -1523,6 +1526,23 @@ func fetchFeeds(client *miniflux.Client) tea.Cmd {
 		if err != nil {
 			return errMsg(err)
 		}
+		return feedsMsg(feeds)
+	}
+}
+
+func refreshErroredFeedsOnStart(client *miniflux.Client) tea.Cmd {
+	return func() tea.Msg {
+		feeds, err := client.Feeds()
+		if err != nil {
+			return nil
+		}
+
+		for _, feed := range feeds {
+			if feed.ParsingErrorCount > 0 {
+				_ = client.RefreshFeed(feed.ID)
+			}
+		}
+
 		return feedsMsg(feeds)
 	}
 }
