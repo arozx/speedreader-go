@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -1858,8 +1859,17 @@ func main() {
 	var minifluxURL string
 	var minifluxToken string
 
-	// 1. Check for file argument
-	if len(os.Args) > 1 {
+	// 1. Check for stdin (piping)
+	stat, _ := os.Stdin.Stat()
+	if (stat.Mode() & os.ModeCharDevice) == 0 {
+		content, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Printf("Error reading stdin: %v\n", err)
+			os.Exit(1)
+		}
+		fileContent = string(content)
+	} else if len(os.Args) > 1 {
+		// 2. Check for file argument
 		fileName := os.Args[1]
 		content, err := os.ReadFile(fileName)
 		if err != nil {
