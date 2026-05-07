@@ -96,18 +96,19 @@ func cleanTitle(title string) string {
 }
 
 type model struct {
-	state         int
-	content       []string
-	index         int
-	wpm           int
-	paused        bool
-	largeText     bool
-	rampSpeed     bool
-	zenMode       bool
-	width         int
-	height        int
-	previousState int
-	err           error
+	state              int
+	content            []string
+	index              int
+	wpm                int
+	paused             bool
+	largeText          bool
+	rampSpeed          bool
+	zenMode            bool
+	width              int
+	height             int
+	previousState      int
+	readingReturnState int
+	err                error
 
 	// Miniflux
 	minifluxClient *miniflux.Client
@@ -268,13 +269,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.state = m.previousState
 					return m, nil
 				}
-				if m.state == StateReading && m.minifluxClient != nil {
-					m.state = StateBrowsing
-					m.paused = true
-					return m, nil
-				}
-				if m.state == StateYouTubeLink && m.minifluxClient != nil {
-					m.state = StateBrowsing
+				// Prevent uses not from the Miniflux menu hitting this block
+				if (m.state == StateReading || m.state == StateYouTubeLink) && m.minifluxClient != nil {
+					if m.state == StateReading {
+						m.paused = true
+					}
+
+					if m.readingReturnState == StateSearching {
+						m.state = StateSearching
+					} else {
+						m.state = StateBrowsing
+					}
 					return m, nil
 				}
 				return m, tea.Quit
@@ -484,9 +489,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if strings.Contains(selected.URL, "youtube.com/watch?v=") || strings.Contains(selected.URL, "youtu.be/") {
 						m.state = StateYouTubeLink
 						m.loading = false // No content to fetch
+						m.readingReturnState = StateBrowsing
 						return m, nil
 					}
 
+					m.readingReturnState = StateBrowsing
 					return m, fetchContent(selected.Content)
 				}
 			case "y":
@@ -527,6 +534,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				searchTerm := m.searchInput.Value()
 
 				switch m.searchMode {
+				case SearchGeneral:
+					if len(m.filteredEntries) > 0 && m.searchCursor < len(m.filteredEntries) {
+						selected := m.filteredEntries[m.searchCursor]
+						m.loading = true
+						m.currentEntry = selected
+
+						if strings.Contains(selected.URL, "youtube.com/watch?v=") || strings.Contains(selected.URL, "youtu.be/") {
+							m.state = StateYouTubeLink
+							m.loading = false
+							m.readingReturnState = StateSearching
+							return m, nil
+						}
+
+						m.readingReturnState = StateSearching
+						return m, fetchContent(selected.Content)
+					}
+					m.state = StateSearching
+					m.loading = false
+					return m, nil
 				case SearchCategory:
 					if len(m.filteredIDs) > 0 && m.searchCursor < len(m.filteredIDs) {
 						m.currentCategoryID = m.filteredIDs[m.searchCursor]
@@ -1698,21 +1724,21 @@ func (m model) currentDelay() time.Duration {
 	// Complexity Ramping
 	if m.rampSpeed {
 		length := len(word)
-		if strings.Contains(word, "http") {
+		switch {
+		case strings.Contains(word, "http"):
 			baseDelay *= 2.0
-		} else {
-			if length > 12 {
-				baseDelay *= 1.5
-			} else if length > 8 {
-				baseDelay *= 1.2
-			}
+		case length > 12:
+			baseDelay *= 1.5
+		case length > 8:
+			baseDelay *= 1.2
 		}
 	}
 
 	// Basic Punctuation detection
-	if strings.HasSuffix(word, ".") || strings.HasSuffix(word, "!") || strings.HasSuffix(word, "?") {
+	switch {
+	case strings.HasSuffix(word, "."), strings.HasSuffix(word, "!"), strings.HasSuffix(word, "?"):
 		baseDelay *= 2.0
-	} else if strings.HasSuffix(word, ",") || strings.HasSuffix(word, ";") {
+	case strings.HasSuffix(word, ","), strings.HasSuffix(word, ";"):
 		baseDelay *= 1.5
 	}
 
@@ -1733,15 +1759,16 @@ func calculateORP(word string) (string, string, string) {
 
 	// Simple heuristic for ORP (Optimal Recognition Point)
 	// Roughly 35% into the word, slightly adjusted for length
-	if n == 1 {
+	switch {
+	case n == 1:
 		focusIdx = 0
-	} else if n >= 2 && n <= 5 {
+	case n >= 2 && n <= 5:
 		focusIdx = 1
-	} else if n >= 6 && n <= 9 {
+	case n >= 6 && n <= 9:
 		focusIdx = 2
-	} else if n >= 10 && n <= 13 {
+	case n >= 10 && n <= 13:
 		focusIdx = 3
-	} else {
+	default:
 		focusIdx = 4
 	}
 
