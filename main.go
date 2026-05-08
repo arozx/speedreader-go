@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -115,6 +116,7 @@ type model struct {
 	minifluxClient *miniflux.Client
 	entries        []*miniflux.Entry
 	totalEntries   int
+	entriesOffset  int
 	fetchingMore   bool
 	cursor         int
 	loading        bool
@@ -158,16 +160,14 @@ type ArticleLink struct {
 }
 
 func (m model) currentSearchTerm() string {
-	if m.filterYouTube {
-		return "youtube.com/watch?v=|youtu.be/"
-	}
 	return m.searchInput.Value()
 }
 
 type tickMsg time.Time
 type entriesMsg struct {
-	result *miniflux.EntryResultSet
-	offset int
+	result     *miniflux.EntryResultSet
+	offset     int
+	nextOffset int
 }
 type categoriesMsg miniflux.Categories
 type feedsMsg miniflux.Feeds
@@ -239,7 +239,7 @@ func saveMinifluxToken(token string) error {
 func (m model) Init() tea.Cmd {
 	if m.state == StateBrowsing && m.minifluxClient != nil {
 		return tea.Batch(
-			fetchEntries(m.minifluxClient, "", 0, 0, 0),
+			fetchEntries(m.minifluxClient, "", 0, 0, 0, false),
 			refreshErroredFeedsOnStart(m.minifluxClient),
 		)
 	}
@@ -305,7 +305,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if url != "" {
 					_ = browser.OpenURL(url)
 					// If it's a YouTube link and client is available, mark as read
-					if m.minifluxClient != nil && entryID != 0 && (strings.Contains(url, "youtube.com/watch?v=") || strings.Contains(url, "youtu.be/")) {
+					if m.minifluxClient != nil && entryID != 0 && isYouTubeURL(url) {
 						// This should return a command to mark as read
 						return m, markAsRead(m.minifluxClient, entryID)
 					}
@@ -454,9 +454,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				// Infinite Scroll Trigger
 				// If we are within 10 items of the end, and we haven't loaded all items, fetch more
-				if !m.fetchingMore && len(m.entries) < m.totalEntries && m.cursor >= len(m.entries)-10 {
+				if !m.fetchingMore && m.entriesOffset < m.totalEntries && m.cursor >= len(m.entries)-10 {
 					m.fetchingMore = true
-					cmd = fetchEntries(m.minifluxClient, m.currentSearchTerm(), m.currentCategoryID, m.currentFeedID, len(m.entries))
+					cmd = fetchEntries(m.minifluxClient, m.currentSearchTerm(), m.currentCategoryID, m.currentFeedID, m.entriesOffset, m.filterYouTube)
 				}
 
 				// Ensure cursor is visible with scrolloff
@@ -487,7 +487,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.currentEntry = selected // Store the selected entry
 
 					// Check if it's a YouTube video
-					if strings.Contains(selected.URL, "youtube.com/watch?v=") || strings.Contains(selected.URL, "youtu.be/") {
+					if isYouTubeEntry(selected) {
 						m.state = StateYouTubeLink
 						m.loading = false // No content to fetch
 						m.readingReturnState = StateBrowsing
@@ -500,7 +500,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "y":
 				m.filterYouTube = !m.filterYouTube
 				m.loading = true
-				return m, fetchEntries(m.minifluxClient, m.currentSearchTerm(), m.currentCategoryID, m.currentFeedID, 0)
+				return m, fetchEntries(m.minifluxClient, m.currentSearchTerm(), m.currentCategoryID, m.currentFeedID, 0, m.filterYouTube)
 			case "m":
 				// Mark as read manually
 				if m.minifluxClient != nil && len(m.entries) > 0 {
@@ -511,7 +511,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.minifluxClient != nil {
 					m.loading = true
 					m.fetchingMore = false
-					return m, fetchEntries(m.minifluxClient, m.currentSearchTerm(), m.currentCategoryID, m.currentFeedID, 0)
+					return m, fetchEntries(m.minifluxClient, m.currentSearchTerm(), m.currentCategoryID, m.currentFeedID, 0, m.filterYouTube)
 				}
 			}
 		case StateSearching:
@@ -521,7 +521,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.state = StateBrowsing
 					m.loading = true
 					m.searchInput.Blur()
-					return m, fetchEntries(m.minifluxClient, m.currentSearchTerm(), m.currentCategoryID, m.currentFeedID, 0)
+					return m, fetchEntries(m.minifluxClient, m.currentSearchTerm(), m.currentCategoryID, m.currentFeedID, 0, m.filterYouTube)
 				}
 				return m, nil
 			case "enter":
@@ -541,7 +541,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.loading = true
 						m.currentEntry = selected
 
-						if strings.Contains(selected.URL, "youtube.com/watch?v=") || strings.Contains(selected.URL, "youtu.be/") {
+						if isYouTubeEntry(selected) {
 							m.state = StateYouTubeLink
 							m.loading = false
 							m.readingReturnState = StateSearching
@@ -575,7 +575,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 
-				return m, fetchEntries(m.minifluxClient, searchTerm, m.currentCategoryID, m.currentFeedID, 0)
+				return m, fetchEntries(m.minifluxClient, searchTerm, m.currentCategoryID, m.currentFeedID, 0, m.filterYouTube)
 
 			case "esc":
 				m.state = StateBrowsing
@@ -724,7 +724,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.loading = true
 						m.urlInput.Blur()
 						m.searchInput.Blur()
-						return m, fetchEntries(m.minifluxClient, "", 0, 0, 0)
+						return m, fetchEntries(m.minifluxClient, "", 0, 0, 0, false)
 					} else {
 						m.err = fmt.Errorf("miniflux URL and Token are required")
 						m.urlInput.Focus() // Go back to URL input
@@ -857,6 +857,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Initial load or refresh
 			m.entries = msg.result.Entries
 			m.totalEntries = msg.result.Total
+			m.entriesOffset = msg.nextOffset
 			m.cursor = 0
 			m.listOffset = 0
 			m.loading = false
@@ -864,6 +865,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Append results
 			m.entries = append(m.entries, msg.result.Entries...)
 			m.totalEntries = msg.result.Total // Update total just in case
+			m.entriesOffset = msg.nextOffset
 		}
 		m.fetchingMore = false
 
@@ -1064,7 +1066,7 @@ func (m model) viewBrowsing() string {
 		}
 
 		// Render scroll indicator for bottom
-		if m.listOffset+visibleHeight < len(m.entries) || (len(m.entries) < m.totalEntries) {
+		if m.listOffset+visibleHeight < len(m.entries) || (m.entriesOffset < m.totalEntries) {
 			if m.fetchingMore {
 				sb.WriteString(normalStyle.Render(strings.Repeat(" ", 15)+"... loading more ...") + "\n")
 			} else {
@@ -1517,23 +1519,54 @@ func (m model) viewReading() string {
 }
 
 // Commands
-func fetchEntries(client *miniflux.Client, search string, categoryID int64, feedID int64, offset int) tea.Cmd {
+func fetchEntries(client *miniflux.Client, search string, categoryID int64, feedID int64, offset int, youtubeOnly bool) tea.Cmd {
 	return func() tea.Msg {
-		filter := &miniflux.Filter{Status: "unread", Limit: 50, Order: "published_at", Direction: "desc", Offset: offset}
-		if search != "" {
-			filter.Search = search
+		const limit = 50
+
+		collected := make([]*miniflux.Entry, 0, limit)
+		nextOffset := offset
+		total := 0
+
+		for {
+			filter := &miniflux.Filter{Status: "unread", Limit: limit, Order: "published_at", Direction: "desc", Offset: nextOffset}
+			if search != "" {
+				filter.Search = search
+			}
+			if categoryID != 0 {
+				filter.CategoryID = categoryID
+			}
+			if feedID != 0 {
+				filter.FeedID = feedID
+			}
+
+			entries, err := client.Entries(filter)
+			if err != nil {
+				return errMsg(err)
+			}
+
+			total = entries.Total
+			nextOffset += len(entries.Entries)
+
+			if youtubeOnly {
+				collected = append(collected, filterYouTubeEntries(entries.Entries)...)
+			} else {
+				collected = append(collected, entries.Entries...)
+			}
+
+			if !youtubeOnly || len(collected) >= limit || nextOffset >= entries.Total || len(entries.Entries) == 0 {
+				break
+			}
 		}
-		if categoryID != 0 {
-			filter.CategoryID = categoryID
+
+		if len(collected) > limit {
+			collected = collected[:limit]
 		}
-		if feedID != 0 {
-			filter.FeedID = feedID
+
+		return entriesMsg{
+			result:     &miniflux.EntryResultSet{Entries: collected, Total: total},
+			offset:     offset,
+			nextOffset: nextOffset,
 		}
-		entries, err := client.Entries(filter)
-		if err != nil {
-			return errMsg(err)
-		}
-		return entriesMsg{result: entries, offset: offset}
 	}
 }
 
@@ -1634,6 +1667,78 @@ func fetchContent(htmlContent string) tea.Cmd {
 		links := extractLinks(htmlContent, text)
 		return contentMsg{text: text, links: links}
 	}
+}
+
+func filterYouTubeEntries(entries []*miniflux.Entry) []*miniflux.Entry {
+	filtered := make([]*miniflux.Entry, 0, len(entries))
+	for _, entry := range entries {
+		if isYouTubeEntry(entry) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
+}
+
+func isYouTubeEntry(entry *miniflux.Entry) bool {
+	if entry == nil {
+		return false
+	}
+	if isYouTubeURL(entry.URL) {
+		return true
+	}
+	for _, link := range extractLinks(entry.Content, "") {
+		if isYouTubeURL(link.URL) {
+			return true
+		}
+	}
+	return false
+}
+
+func isYouTubeURL(rawURL string) bool {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return false
+	}
+
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Host == "" {
+		parsed, err = url.Parse("https://" + rawURL)
+		if err != nil {
+			return false
+		}
+	}
+
+	host := strings.ToLower(parsed.Hostname())
+	host = strings.TrimPrefix(host, "www.")
+	host = strings.TrimPrefix(host, "m.")
+	path := strings.TrimRight(parsed.EscapedPath(), "/")
+
+	if host == "youtu.be" {
+		return path != ""
+	}
+	if !isYouTubeHost(host) {
+		return false
+	}
+
+	switch {
+	case path == "/watch" && parsed.Query().Get("v") != "":
+		return true
+	case strings.HasPrefix(path, "/shorts/"):
+		return true
+	case strings.HasPrefix(path, "/embed/"):
+		return true
+	case strings.HasPrefix(path, "/live/"):
+		return true
+	}
+
+	return false
+}
+
+func isYouTubeHost(host string) bool {
+	return host == "youtube.com" ||
+		strings.HasSuffix(host, ".youtube.com") ||
+		host == "youtube-nocookie.com" ||
+		strings.HasSuffix(host, ".youtube-nocookie.com")
 }
 
 // extractLinks extracts all links from HTML content and tracks their word positions in the converted text
